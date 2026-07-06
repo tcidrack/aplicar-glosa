@@ -6,10 +6,12 @@ import {
 } from "lucide-react";
 import "./PainelGlosa.css";
 
-const PDFJS = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-const WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-const PDFLIB = "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
-const JSZIP = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+// bibliotecas auto-hospedadas (empacotadas no bundle — sem CDN de terceiros)
+import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.js?url";
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import JSZip from "jszip";
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const LOGO_MAIDA =
   "https://maida.health/wp-content/themes/melhortema/assets/images/logo-light.svg";
@@ -192,9 +194,8 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
 }
 
 export default function PainelGlosa() {
-  const libs = useRef({});
-  const [ready, setReady] = useState(false);
-  const [loadErr, setLoadErr] = useState("");
+  const ready = true; // libs empacotadas no bundle — sempre disponíveis
+  const [loadErr] = useState("");
 
   const [tema, setTema] = useState(() => localStorage.getItem("tema") || "claro");
   useEffect(() => { localStorage.setItem("tema", tema); }, [tema]);
@@ -227,26 +228,6 @@ export default function PainelGlosa() {
 
   const getActive = () => store.current.docs.find((d) => d.id === activeId);
 
-  // ---- carregar libs externas ----
-  useEffect(() => {
-    const load = (src) =>
-      new Promise((res, rej) => {
-        const s = document.createElement("script");
-        s.src = src; s.onload = res; s.onerror = () => rej(new Error(src));
-        document.head.appendChild(s);
-      });
-    (async () => {
-      try {
-        await load(PDFJS); await load(PDFLIB); await load(JSZIP);
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER;
-        libs.current = { pdfjsLib: window.pdfjsLib, PDFLib: window.PDFLib, JSZip: window.JSZip };
-        setReady(true);
-      } catch (e) {
-        setLoadErr("Não foi possível carregar as bibliotecas (verifique a conexão): " + e.message);
-      }
-    })();
-  }, []);
-
   // ---- folder input attribute ----
   useEffect(() => {
     if (folderRef.current) folderRef.current.setAttribute("webkitdirectory", "");
@@ -257,11 +238,11 @@ export default function PainelGlosa() {
     if (!ready || !activeId) return;
     let cancelled = false;
     (async () => {
-      const { pdfjsLib } = libs.current;
       const doc = getActive();
       if (!doc) return;
       if (!doc.pdfDoc) {
-        doc.pdfDoc = await pdfjsLib.getDocument({ data: doc.bytes.slice(0) }).promise;
+        // isEvalSupported:false → mitiga GHSA-wgrm-67xf-hhpq (exec. de JS em PDF malicioso)
+        doc.pdfDoc = await pdfjsLib.getDocument({ data: doc.bytes.slice(0), isEvalSupported: false }).promise;
         doc.numPages = doc.pdfDoc.numPages;
         tick();
       }
@@ -463,11 +444,10 @@ export default function PainelGlosa() {
 
   // ---- exportar ----
   const hexRgb = (h) => {
-    const { rgb } = libs.current.PDFLib; const n = parseInt(h.slice(1), 16);
+    const n = parseInt(h.slice(1), 16);
     return rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
   };
   const buildPdf = async (d) => {
-    const { PDFDocument, rgb, StandardFonts } = libs.current.PDFLib;
     const out = await PDFDocument.load(d.bytes);
     const font = await out.embedFont(StandardFonts.HelveticaBold);
     const form = out.getForm();
@@ -518,7 +498,7 @@ export default function PainelGlosa() {
     if (!alvo.length) return;
     setSaving(true);
     try {
-      const zip = new libs.current.JSZip();
+      const zip = new JSZip();
       for (const d of alvo) { zip.file(outName(d.name), await buildPdf(d)); d.saved = true; }
       const blob = await zip.generateAsync({ type: "blob" });
       dl(blob, "glosados.zip", "application/zip"); tick();
