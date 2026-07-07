@@ -1,3 +1,12 @@
+/* altura do app: dvh desconta a barra do navegador no mobile (rodapé sempre visível) */
+.app-shell {
+  height: 100vh;   /* fallback navegadores antigos */
+  height: 100dvh;
+}
+.app-footer {
+  padding-bottom: calc(0.375rem + env(safe-area-inset-bottom)); /* área do "home" do iPhone */
+}
+
 /* ===== TEMA MAIDA — variáveis por tema ===== */
 .tema-claro {
   --bg: #0070FF;

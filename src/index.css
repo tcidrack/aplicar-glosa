@@ -6,4 +6,5 @@ html, body, #root {
 
 body {
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  overflow: hidden; /* sem rolagem da página: o rodapé fica preso na base visível */
 }

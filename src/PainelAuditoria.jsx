@@ -881,7 +881,7 @@ export default function PainelAuditoria() {
   ];
 
   return (
-    <div className={"flex flex-col h-screen text-[var(--text)] select-none tema-" + tema}
+    <div className={"flex flex-col app-shell text-[var(--text)] select-none tema-" + tema}
       style={{ background: "var(--bg)" }}>
       {/* barra da marca */}
       <div className="flex items-center justify-between gap-2 px-3 md:px-4 py-2.5">
@@ -1175,7 +1175,7 @@ export default function PainelAuditoria() {
       )}
 
       {/* footer */}
-      <footer className="flex flex-wrap items-center justify-center gap-2 md:gap-3 px-2 md:px-4 py-1.5 bg-[var(--surface)] border-t border-[var(--border)] text-xs text-[var(--muted)]">
+      <footer className="app-footer flex flex-wrap items-center justify-center gap-2 md:gap-3 px-2 md:px-4 py-1.5 bg-[var(--surface)] border-t border-[var(--border)] text-xs text-[var(--muted)]">
         <span className="truncate max-w-xs hidden md:block">{active ? active.name : "—"}</span>
         <div className="flex-1 hidden md:block" />
         <div className="flex items-center gap-1.5">
