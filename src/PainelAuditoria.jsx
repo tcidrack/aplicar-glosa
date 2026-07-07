@@ -591,8 +591,10 @@ export default function PainelAuditoria() {
   const addText = (p) => {
     const doc = getActive(); if (!doc) return;
     const id = "t" + ++textSeq.current;
+    // tamanho proporcional ao zoom → ~15px na tela (no mobile não nasce gigante)
+    const size = Math.max(9, Math.min(22, Math.round(15 / scale)));
     (doc.annotations[page] = doc.annotations[page] || []).push({
-      type: "text", id, x: p.x, y: p.y, text: "", size: 16, color, w: 120, h: 24,
+      type: "text", id, x: p.x, y: p.y, text: "", size, color, w: 120, h: 24,
     });
     doc.saved = false; editOrig.current = ""; redo.current = [];
     setSelectedId(id); setEditingId(id); tick();
