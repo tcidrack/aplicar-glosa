@@ -229,6 +229,7 @@ export default function PainelGlosa() {
   const folderRef = useRef(null);
   const drawing = useRef(false);
   const startPt = useRef(null);
+  const panning = useRef(null); // arrastar para navegar no modo neutro
 
   const getActive = () => store.current.docs.find((d) => d.id === activeId);
 
@@ -310,11 +311,25 @@ export default function PainelGlosa() {
       addText(p); return;
     }
     setSelectedId(null);
-    if (tool !== "strike" && tool !== "highlight") return; // modo neutro: só deseleciona
+    if (tool !== "strike" && tool !== "highlight") {
+      // modo neutro: arrastar para navegar pelo documento (mouse ou dedo)
+      const m = mainRef.current; if (!m) return;
+      panning.current = { x: e.clientX, y: e.clientY, sl: m.scrollLeft, st: m.scrollTop };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
     drawing.current = true; startPt.current = p;
     e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onMove = (e) => {
+    if (panning.current) {
+      const m = mainRef.current, pn = panning.current;
+      if (m) {
+        m.scrollLeft = pn.sl - (e.clientX - pn.x);
+        m.scrollTop = pn.st - (e.clientY - pn.y);
+      }
+      return;
+    }
     if (!drawing.current) return;
     const p = toDoc(e), s = startPt.current;
     const prev = tool === "strike"
@@ -323,6 +338,7 @@ export default function PainelGlosa() {
     drawOverlay(prev);
   };
   const onUp = (e) => {
+    if (panning.current) { panning.current = null; return; }
     if (!drawing.current) return;
     drawing.current = false;
     const p = toDoc(e), s = startPt.current, doc = getActive();
@@ -349,16 +365,10 @@ export default function PainelGlosa() {
     doc.saved = false; editOrig.current = "";
     setSelectedId(id); setEditingId(id); tick();
   };
-  // abre uma caixa no centro da página visível (usado ao clicar na ferramenta Texto)
-  const addTextCenter = () => {
-    const b = baseRef.current; if (!b) return;
-    addText({ x: (b.width / scale) / 2 - 45, y: (b.height / scale) * 0.15 });
-  };
-  // seleciona ferramenta; ao escolher Texto já abre uma caixinha pronta pra editar
+  // seleciona ferramenta; clicar de novo na ativa desmarca (modo neutro = navegar)
   const selectTool = (id) => {
-    setTool(id);
+    setTool(tool === id ? "select" : id);
     setSelectedId(null);
-    if (id === "text" && getActive()) addTextCenter();
   };
   const updateText = (id, text) => {
     const a = findText(id); if (!a) return;
@@ -705,7 +715,7 @@ export default function PainelGlosa() {
                 <canvas ref={baseRef} className="block rounded" />
                 <canvas ref={overlayRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
                   className="absolute top-0 left-0 rounded"
-                  style={{ cursor: tool === "text" ? "text" : (tool === "strike" || tool === "highlight") ? "crosshair" : "default", touchAction: "none" }} />
+                  style={{ cursor: tool === "text" ? "text" : (tool === "strike" || tool === "highlight") ? "crosshair" : "grab", touchAction: "none" }} />
                 {/* camada de caixas de texto (pointer-events só nas caixas) */}
                 <div className="absolute top-0 left-0 w-full h-full" style={{ pointerEvents: "none" }}>
                   {(active.annotations[page] || [])
