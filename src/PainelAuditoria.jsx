@@ -598,6 +598,8 @@ export default function PainelAuditoria() {
         } else if (a.type === "text") {
           // campo de formulário editável (o destinatário pode alterar no leitor de PDF)
           const tf = form.createTextField(`auditoria_${pg}_${fi++}`);
+          // /DA é obrigatório: sem ele o setFontSize/save lança MissingDAEntryError
+          tf.acroField.setDefaultAppearance("/Helv 0 Tf 0 g");
           tf.setText(a.text || "");
           tf.setFontSize(a.size);
           const w = a.w || (a.size * ((a.text ? a.text.length : 4)) * 0.55);
