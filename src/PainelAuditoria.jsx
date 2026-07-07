@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import {
   FilePlus, Folder, Undo2, Trash2, Save, Download,
   ChevronLeft, ChevronRight, Minus, Plus, Pencil, Type, Highlighter,
-  Moon, Sun, Stamp, Copy, X, Redo2,
+  Moon, Sun, Stamp, Copy, X, Redo2, Move,
 } from "lucide-react";
 import "./PainelAuditoria.css";
 
@@ -223,6 +223,20 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
               }}
             />
           ))}
+          {/* alça de mover: alvo grande e separado do × (evita excluir sem querer) */}
+          <div
+            onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag}
+            title="Arraste para mover"
+            style={{
+              position: "absolute", bottom: -30, left: "50%", transform: "translateX(-50%)",
+              width: 34, height: 24, borderRadius: 12,
+              background: "var(--accent)", color: "var(--accent-contrast)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 1px 4px rgba(0,0,0,.35)", zIndex: 3, cursor: "move", touchAction: "none",
+            }}
+          >
+            <Move style={{ width: 16, height: 16 }} />
+          </div>
         </>
       )}
     </div>
