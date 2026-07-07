@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useReducer } from "react";
+import { flushSync } from "react-dom";
 import {
   FilePlus, Folder, Undo2, Trash2, Save, Download,
   ChevronLeft, ChevronRight, Minus, Plus, Pencil, Type, Highlighter,
@@ -34,8 +35,9 @@ const stampName = (file) =>
 
 // carimbos da pasta local (src/carimbos é ignorada pelo git — sigilosa;
 // entram apenas em builds feitos nesta máquina)
+// ?inline → embute como data-URI base64 no bundle (sem asset baixável em /assets)
 const stampFiles = import.meta.glob("./carimbos/*.{png,jpg,jpeg}", {
-  eager: true, query: "?url", import: "default",
+  eager: true, query: "?inline", import: "default",
 });
 const LOCAL_STAMPS = Object.entries(stampFiles).map(([path, url]) => {
   const file = path.split("/").pop();
@@ -204,7 +206,7 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
           ×
           </RoundBtn>
           <RoundBtn bg="#1f6feb" title="Duplicar texto" onAction={onDuplicate}
-            style={{ top: -10, right: 18 }}>
+            style={{ top: -10, left: -10 }}>
             <Copy style={{ width: 12, height: 12, margin: "0 auto" }} />
           </RoundBtn>
           {handles.map((h) => (
@@ -228,7 +230,7 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
 }
 
 // ---- carimbo inserido no PDF: mover, redimensionar (proporção fixa) e excluir ----
-function StampBox({ a, scale, selected, interactive, onMove, onResize, onSelect, onDelete }) {
+function StampBox({ a, scale, selected, interactive, onMove, onResize, onSelect, onDelete, onDuplicate }) {
   const boxRef = useRef(null);
   const drag = useRef(null);
   const rez = useRef(null);
@@ -293,12 +295,16 @@ function StampBox({ a, scale, selected, interactive, onMove, onResize, onSelect,
         userSelect: "none",
       }}
     >
-      <img src={a.url} alt="" draggable={false}
+      <img src={a.url} alt="" draggable={false} onContextMenu={(e) => e.preventDefault()}
         style={{ width: "100%", height: "100%", pointerEvents: "none", userSelect: "none" }} />
       {selected && interactive && (
         <>
           <RoundBtn bg="#d92d20" title="Excluir" onAction={onDelete}
             style={{ top: -10, right: -10 }}>×</RoundBtn>
+          <RoundBtn bg="#1f6feb" title="Duplicar carimbo" onAction={onDuplicate}
+            style={{ top: -10, left: -10 }}>
+            <Copy style={{ width: 12, height: 12, margin: "0 auto" }} />
+          </RoundBtn>
           {handles.map((h) => (
             <div
               key={h.key}
@@ -338,6 +344,10 @@ export default function PainelAuditoria() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stampsOpen, setStampsOpen] = useState(false);
   const [userStamps, setUserStamps] = useState(loadUserStamps);
+  const [dialog, setDialog] = useState(null); // alert/confirm customizado
+  const showAlert = (title, message) => setDialog({ title, message, alert: true });
+  const showConfirm = (title, message, onConfirm, opts = {}) =>
+    setDialog({ title, message, onConfirm, confirmText: opts.confirmText || "Confirmar" });
   const [editingId, setEditingId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const textSeq = useRef(0);
@@ -500,7 +510,11 @@ export default function PainelAuditoria() {
     }
     if (tool === "text") {
       if (editingId) return;   // já há uma caixa em edição: não cria outra (o blur finaliza)
-      addText(p); return;
+      // flushSync + foco síncrono dentro do gesto → abre o teclado no celular
+      flushSync(() => addText(p));
+      const inp = wrapRef.current && wrapRef.current.querySelector("input");
+      if (inp) inp.focus();
+      return;
     }
     setSelectedId(null);
     if (tool !== "strike" && tool !== "highlight") {
@@ -631,11 +645,12 @@ export default function PainelAuditoria() {
     getActive().saved = false;
     setEditingId(null); setTool("select"); tick();
   };
-  // duplica um texto já inserido (para valores/códigos repetidos)
-  const duplicateText = (id) => {
+  // duplica qualquer anotação já inserida (texto ou carimbo)
+  const duplicateAnn = (id) => {
     const doc = getActive(); const a = findText(id);
     if (!doc || !a) return;
-    const novo = { ...a, id: "t" + ++textSeq.current, x: a.x + 15, y: a.y + 15 };
+    const prefix = a.type === "stamp" ? "s" : "t";
+    const novo = { ...a, id: prefix + ++textSeq.current, x: a.x + 15, y: a.y + 15 };
     (doc.annotations[page] = doc.annotations[page] || []).push(novo);
     doc.saved = false;
     setSelectedId(novo.id); tick();
@@ -669,7 +684,7 @@ export default function PainelAuditoria() {
       const lista = [...userStamps, novo];
       setUserStamps(lista);
       try { localStorage.setItem("carimbos", JSON.stringify(lista)); }
-      catch { alert("Não foi possível salvar o carimbo (imagem muito grande?)."); }
+      catch { showAlert("Não foi possível salvar", "O carimbo pode ser grande demais. Tente uma imagem menor."); }
     };
     reader.readAsDataURL(file);
   };
@@ -701,17 +716,22 @@ export default function PainelAuditoria() {
   const removeDoc = (id) => {
     const docs = store.current.docs;
     const d = docs.find((x) => x.id === id); if (!d) return;
+    const doRemove = () => {
+      const list = store.current.docs;
+      const idx = list.findIndex((x) => x.id === id);
+      store.current.docs = list.filter((x) => x.id !== id);
+      if (id === activeId) {
+        const rest = store.current.docs;
+        const next = rest[idx] || rest[idx - 1] || null;
+        setActiveId(next ? next.id : null);
+        setPage(next ? next.page || 1 : 1);
+      }
+      tick();
+    };
     const temMarcas = !d.saved && Object.values(d.annotations).some((l) => l.length);
-    if (temMarcas && !window.confirm(`Remover "${d.name}"? As marcações não salvas serão perdidas.`)) return;
-    const idx = docs.findIndex((x) => x.id === id);
-    store.current.docs = docs.filter((x) => x.id !== id);
-    if (id === activeId) {
-      const rest = store.current.docs;
-      const next = rest[idx] || rest[idx - 1] || null;
-      setActiveId(next ? next.id : null);
-      setPage(next ? next.page || 1 : 1);
-    }
-    tick();
+    if (temMarcas)
+      showConfirm("Remover documento", `Remover "${d.name}"? As marcações não salvas serão perdidas.`, doRemove, { confirmText: "Remover" });
+    else doRemove();
   };
   const undo = () => {
     const d = getActive(); const l = d && d.annotations[page];
@@ -719,10 +739,10 @@ export default function PainelAuditoria() {
   };
   const clearPage = () => {
     const d = getActive();
-    if (d && (d.annotations[page] || []).length &&
-        window.confirm("Remover todas as marcações desta página?")) {
-      d.annotations[page] = []; drawOverlay(); tick();
-    }
+    if (!d || !(d.annotations[page] || []).length) return;
+    showConfirm("Limpar página", "Remover todas as marcações desta página?", () => {
+      d.annotations[page] = []; setSelectedId(null); drawOverlay(); tick();
+    }, { confirmText: "Limpar" });
   };
   const prevPage = () => { if (page > 1) { const d = getActive(); d.page = page - 1; setPage(page - 1); } };
   const nextPage = () => { const d = getActive(); if (d && page < d.numPages) { d.page = page + 1; setPage(page + 1); } };
@@ -788,6 +808,7 @@ export default function PainelAuditoria() {
           tf.addToPage(pageObj, {
             x: a.x, y: H - a.y - h, width: w, height: h,
             textColor: hexRgb(a.color), borderWidth: 0,
+            backgroundColor: undefined, // sem fundo branco: só o texto
           });
         } else if (a.type === "stamp") {
           const img = await embedStamp(a.url);
@@ -804,12 +825,21 @@ export default function PainelAuditoria() {
     const a = document.createElement("a"); a.href = url; a.download = name; a.click();
     URL.revokeObjectURL(url);
   };
-  const saveOne = async () => {
+  const doSaveOne = async () => {
     const d = getActive(); if (!d) return;
     setSaving(true);
     try { dl(await buildPdf(d), outName(d.name)); d.saved = true; tick(); }
-    catch (e) { alert("Erro ao gerar: " + e.message); }
+    catch (e) { showAlert("Erro ao gerar", e.message); }
     finally { setSaving(false); }
+  };
+  const saveOne = () => {
+    const d = getActive(); if (!d) return;
+    const temCarimbo = Object.values(d.annotations).some((l) => l.some((a) => a.type === "stamp"));
+    if (!temCarimbo)
+      showConfirm("Salvar sem carimbo?",
+        "Você não inseriu nenhum carimbo neste documento. Deseja salvar mesmo assim?",
+        doSaveOne, { confirmText: "Salvar assim" });
+    else doSaveOne();
   };
   const saveAll = async () => {
     const alvo = store.current.docs.filter((d) => Object.values(d.annotations).some((l) => l.length));
@@ -821,7 +851,7 @@ export default function PainelAuditoria() {
       const blob = await zip.generateAsync({ type: "blob" });
       dl(blob, "auditados.zip", "application/zip"); tick();
       setSidebarOpen(false);
-    } catch (e) { alert("Erro ao compactar: " + e.message); }
+    } catch (e) { showAlert("Erro ao compactar", e.message); }
     finally { setSaving(false); }
   };
 
@@ -1031,6 +1061,7 @@ export default function PainelAuditoria() {
                         onResize={(w, h) => resizeStamp(a.id, w, h)}
                         onSelect={() => setSelectedId(a.id)}
                         onDelete={() => deleteText(a.id)}
+                        onDuplicate={() => duplicateAnn(a.id)}
                       />
                     ) : (
                       <TextBox
@@ -1049,7 +1080,7 @@ export default function PainelAuditoria() {
                         onSelect={() => setSelectedId(a.id)}
                         onDelete={() => deleteText(a.id)}
                         onCancel={() => cancelText(a.id)}
-                        onDuplicate={() => duplicateText(a.id)}
+                        onDuplicate={() => duplicateAnn(a.id)}
                       />
                     ))}
                 </div>
@@ -1058,6 +1089,29 @@ export default function PainelAuditoria() {
           )}
         </main>
       </div>
+
+      {/* diálogo customizado (alert/confirm) */}
+      {dialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setDialog(null)} />
+          <div className="relative bg-[var(--surface)] rounded-xl shadow-2xl p-5 w-full max-w-sm border border-[var(--border)]">
+            <b className="text-[var(--text)] block mb-2">{dialog.title}</b>
+            <p className="text-sm text-[var(--muted)] mb-4 leading-relaxed">{dialog.message}</p>
+            <div className="flex justify-end gap-2">
+              {!dialog.alert && (
+                <button onClick={() => setDialog(null)}
+                  className="px-3 py-2 rounded-lg text-sm border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)]">
+                  Cancelar
+                </button>
+              )}
+              <button onClick={() => { const cb = dialog.onConfirm; setDialog(null); if (cb) cb(); }}
+                className="px-3 py-2 rounded-lg text-sm font-semibold bg-[var(--accent)] text-[var(--accent-contrast)] hover:opacity-90">
+                {dialog.alert ? "OK" : dialog.confirmText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* painel de carimbos */}
       {stampsOpen && (
@@ -1086,7 +1140,7 @@ export default function PainelAuditoria() {
                     addStamp(s, img && img.naturalWidth ? img.naturalHeight / img.naturalWidth : 0.4);
                   }}
                   className="relative border border-[var(--border)] rounded-lg p-2 cursor-pointer bg-white hover:border-[var(--accent)] hover:shadow">
-                  <img src={s.url} alt={s.nome} draggable={false}
+                  <img src={s.url} alt={s.nome} draggable={false} onContextMenu={(e) => e.preventDefault()}
                     className="w-full h-16 object-contain pointer-events-none" />
                   <div className="text-xs font-bold text-center mt-1.5 truncate text-slate-800">{s.nome}</div>
                   {s.local && (

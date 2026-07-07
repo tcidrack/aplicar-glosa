@@ -1,7 +1,3 @@
-# carimbos reais das auditoras — NUNCA subir para o GitHub (repo público)
-src/carimbos/*
-!src/carimbos/LEIA-ME.txt
-
 node_modules
 dist
 dist-ssr
