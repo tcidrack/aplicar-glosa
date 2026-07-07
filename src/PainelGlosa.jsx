@@ -28,10 +28,10 @@ function RoundBtn({ style, title, onAction, bg, children }) {
       onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); onAction(); }}
       title={title}
       style={{
-        position: "absolute", width: 18, height: 18, borderRadius: "50%",
-        border: "none", background: bg, color: "#fff", fontSize: 13,
-        lineHeight: "18px", textAlign: "center", cursor: "pointer", padding: 0,
-        boxShadow: "0 1px 3px rgba(0,0,0,.3)", zIndex: 3, ...style,
+        position: "absolute", width: 22, height: 22, borderRadius: "50%",
+        border: "none", background: bg, color: "#fff", fontSize: 14,
+        lineHeight: "22px", textAlign: "center", cursor: "pointer", padding: 0,
+        boxShadow: "0 1px 3px rgba(0,0,0,.3)", zIndex: 3, touchAction: "none", ...style,
       }}
     >
       {children}
@@ -110,6 +110,7 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
     lineHeight: 1.25,
     whiteSpace: "pre",
     pointerEvents: interactive ? "auto" : "none",
+    touchAction: "none", // arraste com o dedo sem rolar a página
   };
 
   if (editing) {
@@ -144,9 +145,9 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
 
   const showBox = selected || hover;
   const handles = [
-    { key: "tl", pos: { top: -5, left: -5, cursor: "nwse-resize" } },
-    { key: "bl", pos: { bottom: -5, left: -5, cursor: "nesw-resize" } },
-    { key: "br", pos: { bottom: -5, right: -5, cursor: "nwse-resize" } },
+    { key: "tl", pos: { top: -8, left: -8, cursor: "nwse-resize" } },
+    { key: "bl", pos: { bottom: -8, left: -8, cursor: "nesw-resize" } },
+    { key: "br", pos: { bottom: -8, right: -8, cursor: "nwse-resize" } },
   ];
   return (
     <div
@@ -181,9 +182,10 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
               onPointerMove={moveResize}
               onPointerUp={endResize}
               style={{
-                position: "absolute", width: 11, height: 11, borderRadius: 3,
+                position: "absolute", width: 16, height: 16, borderRadius: 4,
                 background: "#fff", border: "1.5px solid var(--accent)",
-                boxShadow: "0 1px 3px rgba(0,0,0,.3)", zIndex: 2, ...h.pos,
+                boxShadow: "0 1px 3px rgba(0,0,0,.3)", zIndex: 2,
+                touchAction: "none", ...h.pos,
               }}
             />
           ))}
@@ -209,6 +211,7 @@ export default function PainelGlosa() {
   const [color, setColor] = useState("#d92d20");
   const [thickness, setThickness] = useState(2);
   const [saving, setSaving] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const textSeq = useRef(0);
@@ -221,6 +224,7 @@ export default function PainelGlosa() {
   const baseRef = useRef(null);
   const overlayRef = useRef(null);
   const wrapRef = useRef(null);
+  const mainRef = useRef(null);
   const fileRef = useRef(null);
   const folderRef = useRef(null);
   const drawing = useRef(false);
@@ -248,6 +252,16 @@ export default function PainelGlosa() {
       }
       const pageObj = await doc.pdfDoc.getPage(page);
       if (cancelled) return;
+      // auto-fit: na 1ª abertura do doc, ajusta o zoom à largura disponível (celular)
+      if (!doc.autoFit) {
+        doc.autoFit = true;
+        const avail = mainRef.current ? mainRef.current.clientWidth - 32 : 0;
+        if (avail > 0) {
+          const vp1 = pageObj.getViewport({ scale: 1 });
+          const fit = Math.min(1.3, Math.max(0.5, avail / vp1.width));
+          if (fit < scale - 0.01) { setScale(fit); return; } // re-renderiza com o novo zoom
+        }
+      }
       const vp = pageObj.getViewport({ scale });
       const b = baseRef.current, o = overlayRef.current;
       if (!b || !o) return;
@@ -408,6 +422,7 @@ export default function PainelGlosa() {
     const old = getActive(); if (old) old.page = page;
     const d = store.current.docs.find((x) => x.id === id);
     setActiveId(id); setPage(d.page || 1);
+    setSidebarOpen(false); // fecha a gaveta no mobile
   };
   const undo = () => {
     const d = getActive(); const l = d && d.annotations[page];
@@ -502,6 +517,7 @@ export default function PainelGlosa() {
       for (const d of alvo) { zip.file(outName(d.name), await buildPdf(d)); d.saved = true; }
       const blob = await zip.generateAsync({ type: "blob" });
       dl(blob, "glosados.zip", "application/zip"); tick();
+      setSidebarOpen(false);
     } catch (e) { alert("Erro ao compactar: " + e.message); }
     finally { setSaving(false); }
   };
@@ -530,26 +546,33 @@ export default function PainelGlosa() {
     <div className={"flex flex-col h-screen text-[var(--text)] select-none tema-" + tema}
       style={{ background: "var(--bg)" }}>
       {/* barra da marca */}
-      <div className="flex items-center justify-between gap-3 px-4 py-2.5">
-        <div className="flex items-center gap-3">
-          <img src={LOGO_MAIDA} alt="Maida" className="h-8" />
-          <div className="flex flex-col leading-tight text-white">
-            <b className="text-base">Painel de Glosa</b>
-            <span className="text-xs opacity-80">Auditoria médica — marcação de cortes em lote</span>
+      <div className="flex items-center justify-between gap-2 px-3 md:px-4 py-2.5">
+        <div className="flex items-center gap-2 md:gap-3 min-w-0">
+          <img src={LOGO_MAIDA} alt="Maida" className="h-6 md:h-8" />
+          <div className="flex flex-col leading-tight text-white min-w-0">
+            <b className="text-sm md:text-base truncate">Painel de Glosa</b>
+            <span className="text-xs opacity-80 hidden sm:block">Auditoria médica — marcação de cortes em lote</span>
           </div>
         </div>
-        <button className="btn-tema" onClick={() => setTema(tema === "claro" ? "escuro" : "claro")}>
-          {tema === "claro" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
-          {tema === "claro" ? "Escuro" : "Claro"}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* abre a fila de documentos no mobile */}
+          <button className="btn-tema md:hidden" onClick={() => setSidebarOpen(true)}>
+            <Folder className="w-4 h-4" />
+            Docs{docs.length ? ` (${docs.length})` : ""}
+          </button>
+          <button className="btn-tema" onClick={() => setTema(tema === "claro" ? "escuro" : "claro")}>
+            {tema === "claro" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+            <span className="hidden sm:inline">{tema === "claro" ? "Escuro" : "Claro"}</span>
+          </button>
+        </div>
       </div>
 
-      {/* toolbar */}
-      <header className="flex flex-wrap items-center gap-3 px-4 py-2 bg-[var(--surface)] border-y border-[var(--border)] shadow-sm z-10">
-        <div className="flex items-center gap-1.5 pr-3 border-r border-[var(--border)]">
+      {/* toolbar (rolável na horizontal no celular) */}
+      <header className="flex flex-nowrap overflow-x-auto md:flex-wrap md:overflow-visible items-center gap-3 px-3 md:px-4 py-2 bg-[var(--surface)] border-y border-[var(--border)] shadow-sm z-10 maida-scroll">
+        <div className="flex shrink-0 items-center gap-1.5 pr-3 border-r border-[var(--border)]">
           {tools.map(({ id, label, Icon }) => (
             <button key={id} onClick={() => selectTool(id)}
-              className={"flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border font-semibold transition-colors " +
+              className={"flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border font-semibold transition-colors whitespace-nowrap " +
                 (tool === id
                   ? "bg-[var(--accent)] border-[var(--accent)] text-[var(--accent-contrast)]"
                   : "bg-[var(--surface)] border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)]")}>
@@ -558,7 +581,7 @@ export default function PainelGlosa() {
           ))}
         </div>
 
-        <div className="flex items-center gap-1.5 pr-3 border-r border-[var(--border)]">
+        <div className="flex shrink-0 items-center gap-1.5 pr-3 border-r border-[var(--border)]">
           <span className="text-xs uppercase tracking-wide text-[var(--muted)]">Cor</span>
           {COLORS.map((c) => (
             <button key={c} onClick={() => setColor(c)}
@@ -574,7 +597,7 @@ export default function PainelGlosa() {
           </label>
         </div>
 
-        <div className="flex items-center gap-2 pr-3 border-r border-[var(--border)]">
+        <div className="flex shrink-0 items-center gap-2 pr-3 border-r border-[var(--border)]">
           <span className="text-xs uppercase tracking-wide text-[var(--muted)]">Espessura</span>
           <input type="range" min="1" max="5" step="0.5" value={thickness}
             onChange={(e) => setThickness(parseFloat(e.target.value))} className="w-20"
@@ -582,26 +605,36 @@ export default function PainelGlosa() {
           <span className="text-xs text-[var(--muted)] w-5 text-center">{thickness}</span>
         </div>
 
-        <div className="flex items-center gap-1.5 pr-3 border-r border-[var(--border)]">
+        <div className="flex shrink-0 items-center gap-1.5 pr-3 border-r border-[var(--border)]">
           <button onClick={undo} disabled={!hasMarks}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40">
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
             <Undo2 className="w-4 h-4" />Desfazer
           </button>
           <button onClick={clearPage} disabled={!hasMarks}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40">
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
             <Trash2 className="w-4 h-4" />Limpar página
           </button>
         </div>
 
         <button onClick={saveOne} disabled={!active || saving}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-[var(--accent)] text-[var(--accent-contrast)] hover:opacity-90 disabled:opacity-40">
+          className="flex shrink-0 items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-[var(--accent)] text-[var(--accent-contrast)] hover:opacity-90 disabled:opacity-40 whitespace-nowrap">
           <Save className="w-4 h-4" />Salvar este
         </button>
       </header>
 
-      <div className="flex flex-1 min-h-0">
-        {/* sidebar */}
-        <aside className="w-72 flex flex-col min-h-0 bg-[var(--surface)] border-r border-[var(--border)]">
+      <div className="flex flex-1 min-h-0 relative">
+        {/* backdrop da gaveta (mobile) */}
+        {sidebarOpen && (
+          <div className="fixed inset-0 z-30 bg-black/50 md:hidden"
+            onClick={() => setSidebarOpen(false)} />
+        )}
+        {/* sidebar: gaveta no mobile, fixa no desktop */}
+        <aside className={
+          "w-72 flex flex-col bg-[var(--surface)] border-r border-[var(--border)] " +
+          "fixed inset-y-0 left-0 z-40 transform transition-transform duration-200 " +
+          (sidebarOpen ? "translate-x-0 " : "-translate-x-full ") +
+          "md:static md:translate-x-0 md:min-h-0 md:z-auto md:transform-none"
+        }>
           <div className="p-3 border-b border-[var(--border)]">
             <div className="flex gap-2">
               <button onClick={() => fileRef.current.click()}
@@ -650,7 +683,7 @@ export default function PainelGlosa() {
         </aside>
 
         {/* workspace */}
-        <main className="flex-1 overflow-auto flex justify-center p-6 maida-scroll">
+        <main ref={mainRef} className="flex-1 overflow-auto flex justify-center p-3 md:p-6 maida-scroll">
           {loadErr ? (
             <div className="m-auto max-w-md text-center text-red-500 text-sm">{loadErr}</div>
           ) : !ready ? (
@@ -704,23 +737,23 @@ export default function PainelGlosa() {
       </div>
 
       {/* footer */}
-      <footer className="flex flex-wrap items-center gap-3 px-4 py-1.5 bg-[var(--surface)] border-t border-[var(--border)] text-xs text-[var(--muted)]">
-        <span className="truncate max-w-xs">{active ? active.name : "—"}</span>
-        <div className="flex-1" />
+      <footer className="flex flex-wrap items-center justify-center gap-2 md:gap-3 px-2 md:px-4 py-1.5 bg-[var(--surface)] border-t border-[var(--border)] text-xs text-[var(--muted)]">
+        <span className="truncate max-w-xs hidden md:block">{active ? active.name : "—"}</span>
+        <div className="flex-1 hidden md:block" />
         <div className="flex items-center gap-1.5">
           <button onClick={prevPage} disabled={!active || page <= 1}
-            className="px-2.5 py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
+            className="px-3 py-1.5 md:px-2.5 md:py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
           <span className="w-24 text-center">Página {active ? page : 0} / {active ? active.numPages : 0}</span>
           <button onClick={nextPage} disabled={!active || page >= (active ? active.numPages : 0)}
-            className="px-2.5 py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
+            className="px-3 py-1.5 md:px-2.5 md:py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
         </div>
-        <div className="flex-1" />
+        <div className="flex-1 hidden md:block" />
         <div className="flex items-center gap-1.5">
           <button onClick={() => setScale((s) => Math.max(0.5, s - 0.15))} disabled={!active}
-            className="px-2.5 py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><Minus className="w-4 h-4" /></button>
+            className="px-3 py-1.5 md:px-2.5 md:py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><Minus className="w-4 h-4" /></button>
           <span className="w-12 text-center">{Math.round(scale * 100)}%</span>
           <button onClick={() => setScale((s) => Math.min(3, s + 0.15))} disabled={!active}
-            className="px-2.5 py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><Plus className="w-4 h-4" /></button>
+            className="px-3 py-1.5 md:px-2.5 md:py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><Plus className="w-4 h-4" /></button>
         </div>
       </footer>
     </div>
