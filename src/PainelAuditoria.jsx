@@ -786,9 +786,7 @@ export default function PainelAuditoria() {
   const buildPdf = async (d) => {
     const out = await PDFDocument.load(d.bytes);
     const font = await out.embedFont(StandardFonts.HelveticaBold);
-    const form = out.getForm();
     const pages = out.getPages();
-    let fi = 0;
     const stampCache = new Map(); // url → PDFImage (embeda cada carimbo 1x por documento)
     const embedStamp = async (url) => {
       if (stampCache.has(url)) return stampCache.get(url);
@@ -809,18 +807,16 @@ export default function PainelAuditoria() {
           const yTop = Math.min(a.y1, a.y2), h = Math.abs(a.y2 - a.y1);
           pageObj.drawRectangle({ x, y: H - yTop - h, width: w, height: h, color: hexRgb(a.color || "#ffd600"), opacity: 0.38 });
         } else if (a.type === "text") {
-          // criado como campo só para gerar a aparência; será achatado (flatten) no fim
-          const tf = form.createTextField(`auditoria_${pg}_${fi++}`);
-          // /DA é obrigatório: sem ele o setFontSize/save lança MissingDAEntryError
-          tf.acroField.setDefaultAppearance("/Helv 0 Tf 0 g");
-          tf.setText(a.text || "");
-          tf.setFontSize(a.size);
-          const w = a.w || (a.size * ((a.text ? a.text.length : 4)) * 0.55);
-          const h = a.h || (a.size * 1.5);
-          tf.addToPage(pageObj, {
-            x: a.x, y: H - a.y - h, width: w, height: h,
-            textColor: hexRgb(a.color), borderWidth: 0,
-            backgroundColor: undefined, // sem fundo branco: só o texto
+          // desenha só o texto (sem caixa/borda/fundo), fixo e não editável
+          String(a.text || "").split("\n").forEach((ln, i) => {
+            if (!ln) return;
+            pageObj.drawText(ln, {
+              x: a.x + 1,
+              y: H - a.y - a.size * (i + 1), // baseline ~1 tamanho abaixo do topo (casa com a tela)
+              size: a.size,
+              font,
+              color: hexRgb(a.color),
+            });
           });
         } else if (a.type === "stamp") {
           const img = await embedStamp(a.url);
@@ -828,9 +824,6 @@ export default function PainelAuditoria() {
         }
       }
     }
-    try { form.updateFieldAppearances(font); } catch { /* usa aparência padrão */ }
-    // achata os campos → texto vira impresso: não editável e sem realce/fundo no leitor
-    try { form.flatten(); } catch { /* sem campos ou já achatado */ }
     return out.save();
   };
   const outName = (n) => n.replace(/\.pdf$/i, "") + " - AUDITADO.pdf";
