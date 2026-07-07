@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useReducer } from "react";
 import {
   FilePlus, Folder, Undo2, Trash2, Save, Download,
   ChevronLeft, ChevronRight, Minus, Plus, Pencil, Type, Highlighter,
-  Moon, Sun,
+  Moon, Sun, Stamp, Copy, X,
 } from "lucide-react";
 import "./PainelAuditoria.css";
 
@@ -20,6 +20,32 @@ const LOGO_MAIDA =
 const hexA = (h, al) => {
   const n = parseInt(h.slice(1), 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${al})`;
+};
+
+// ---- carimbos ----
+// nome do dono a partir do arquivo: "carimbo-aline-batista.png" → "Aline Batista"
+const stampName = (file) =>
+  file
+    .replace(/\.(png|jpe?g)$/i, "")
+    .replace(/^carimbo[-_]*/i, "")
+    .replace(/[-_]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase()) || "Carimbo";
+
+// carimbos da pasta local (src/carimbos é ignorada pelo git — sigilosa;
+// entram apenas em builds feitos nesta máquina)
+const stampFiles = import.meta.glob("./carimbos/*.{png,jpg,jpeg}", {
+  eager: true, query: "?url", import: "default",
+});
+const LOCAL_STAMPS = Object.entries(stampFiles).map(([path, url]) => {
+  const file = path.split("/").pop();
+  return { key: "f:" + file, nome: stampName(file), url, local: false };
+});
+
+// carimbos adicionados pelo usuário no navegador (nunca saem do dispositivo)
+const loadUserStamps = () => {
+  try { return JSON.parse(localStorage.getItem("carimbos") || "[]"); }
+  catch { return []; }
 };
 
 
@@ -43,7 +69,7 @@ function RoundBtn({ style, title, onAction, bg, children }) {
 
 // ---- caixa de texto editável, móvel e redimensionável (estilo Canva) ----
 function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
-  onResize, onMeasure, onStartEdit, onEndEdit, onSelect, onDelete, onCancel }) {
+  onResize, onMeasure, onStartEdit, onEndEdit, onSelect, onDelete, onCancel, onDuplicate }) {
   const boxRef = useRef(null);
   const inputRef = useRef(null);
   const drag = useRef(null);
@@ -177,6 +203,102 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
           <RoundBtn bg="#d92d20" title="Excluir" onAction={onDelete} style={{ top: -10, right: -10 }}>
           ×
           </RoundBtn>
+          <RoundBtn bg="#1f6feb" title="Duplicar texto" onAction={onDuplicate}
+            style={{ top: -10, right: 18 }}>
+            <Copy style={{ width: 12, height: 12, margin: "0 auto" }} />
+          </RoundBtn>
+          {handles.map((h) => (
+            <div
+              key={h.key}
+              onPointerDown={startResize}
+              onPointerMove={moveResize}
+              onPointerUp={endResize}
+              style={{
+                position: "absolute", width: 16, height: 16, borderRadius: 4,
+                background: "#fff", border: "1.5px solid var(--accent)",
+                boxShadow: "0 1px 3px rgba(0,0,0,.3)", zIndex: 2,
+                touchAction: "none", ...h.pos,
+              }}
+            />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- carimbo inserido no PDF: mover, redimensionar (proporção fixa) e excluir ----
+function StampBox({ a, scale, selected, interactive, onMove, onResize, onSelect, onDelete }) {
+  const boxRef = useRef(null);
+  const drag = useRef(null);
+  const rez = useRef(null);
+  const [hover, setHover] = useState(false);
+
+  const startDrag = (e) => {
+    e.stopPropagation();
+    onSelect();
+    drag.current = { px: e.clientX, py: e.clientY, x: a.x, y: a.y };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const moveDrag = (e) => {
+    if (!drag.current) return;
+    const d = drag.current;
+    onMove(Math.max(0, d.x + (e.clientX - d.px) / scale),
+           Math.max(0, d.y + (e.clientY - d.py) / scale));
+  };
+  const endDrag = () => { drag.current = null; };
+
+  const startResize = (e) => {
+    e.stopPropagation();
+    const r = boxRef.current.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    rez.current = { cx, cy, w0: a.w, h0: a.h,
+      d0: Math.hypot(e.clientX - cx, e.clientY - cy) || 1 };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const moveResize = (e) => {
+    const rc = rez.current; if (!rc) return;
+    const k = Math.hypot(e.clientX - rc.cx, e.clientY - rc.cy) / rc.d0;
+    const w = Math.max(24, Math.min(600, rc.w0 * k));
+    onResize(w, w * (rc.h0 / rc.w0)); // mantém a proporção
+  };
+  const endResize = () => { rez.current = null; };
+
+  const showBox = selected || hover;
+  const handles = [
+    { key: "tl", pos: { top: -8, left: -8, cursor: "nwse-resize" } },
+    { key: "bl", pos: { bottom: -8, left: -8, cursor: "nesw-resize" } },
+    { key: "br", pos: { bottom: -8, right: -8, cursor: "nwse-resize" } },
+  ];
+  return (
+    <div
+      ref={boxRef}
+      onPointerDown={startDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={interactive ? "Arraste p/ mover · cantos p/ tamanho" : undefined}
+      style={{
+        position: "absolute",
+        left: a.x * scale,
+        top: a.y * scale,
+        width: a.w * scale,
+        height: a.h * scale,
+        cursor: interactive ? "move" : "default",
+        borderRadius: 5,
+        border: showBox ? "1.5px dashed var(--accent)" : "1.5px solid transparent",
+        pointerEvents: interactive ? "auto" : "none",
+        touchAction: "none",
+        userSelect: "none",
+      }}
+    >
+      <img src={a.url} alt="" draggable={false}
+        style={{ width: "100%", height: "100%", pointerEvents: "none", userSelect: "none" }} />
+      {selected && interactive && (
+        <>
+          <RoundBtn bg="#d92d20" title="Excluir" onAction={onDelete}
+            style={{ top: -10, right: -10 }}>×</RoundBtn>
           {handles.map((h) => (
             <div
               key={h.key}
@@ -214,6 +336,8 @@ export default function PainelAuditoria() {
   const [thickness, setThickness] = useState(2);
   const [saving, setSaving] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [stampsOpen, setStampsOpen] = useState(false);
+  const [userStamps, setUserStamps] = useState(loadUserStamps);
   const [editingId, setEditingId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const textSeq = useRef(0);
@@ -229,6 +353,7 @@ export default function PainelAuditoria() {
   const mainRef = useRef(null);
   const fileRef = useRef(null);
   const folderRef = useRef(null);
+  const stampFileRef = useRef(null);
   const drawing = useRef(false);
   const startPt = useRef(null);
   const panning = useRef(null); // arrastar para navegar no modo neutro
@@ -506,6 +631,53 @@ export default function PainelAuditoria() {
     getActive().saved = false;
     setEditingId(null); setTool("select"); tick();
   };
+  // duplica um texto já inserido (para valores/códigos repetidos)
+  const duplicateText = (id) => {
+    const doc = getActive(); const a = findText(id);
+    if (!doc || !a) return;
+    const novo = { ...a, id: "t" + ++textSeq.current, x: a.x + 15, y: a.y + 15 };
+    (doc.annotations[page] = doc.annotations[page] || []).push(novo);
+    doc.saved = false;
+    setSelectedId(novo.id); tick();
+  };
+
+  // ---- carimbos ----
+  const allStamps = [...LOCAL_STAMPS, ...userStamps];
+  const addStamp = (stamp, ratio) => {
+    const doc = getActive(); if (!doc) return;
+    const m = mainRef.current;
+    const w = 150, h = w * (ratio || 0.4);
+    // centro da área visível, em coords do documento
+    const x = m ? (m.scrollLeft + m.clientWidth / 2) / scale - w / 2 : 40;
+    const y = m ? (m.scrollTop + m.clientHeight / 2) / scale - h / 2 : 40;
+    const id = "s" + ++textSeq.current;
+    (doc.annotations[page] = doc.annotations[page] || []).push({
+      type: "stamp", id, x: Math.max(0, x), y: Math.max(0, y), w, h, url: stamp.url,
+    });
+    doc.saved = false;
+    setSelectedId(id); setStampsOpen(false); setTool("select"); tick();
+  };
+  const resizeStamp = (id, w, h) => {
+    const a = findText(id); if (!a) return;
+    a.w = w; a.h = h; getActive().saved = false; tick();
+  };
+  // upload de carimbo do próprio usuário — fica apenas neste navegador (localStorage)
+  const addUserStamp = (file) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const novo = { key: "u:" + Date.now(), nome: stampName(file.name), url: reader.result, local: true };
+      const lista = [...userStamps, novo];
+      setUserStamps(lista);
+      try { localStorage.setItem("carimbos", JSON.stringify(lista)); }
+      catch { alert("Não foi possível salvar o carimbo (imagem muito grande?)."); }
+    };
+    reader.readAsDataURL(file);
+  };
+  const removeUserStamp = (key) => {
+    const lista = userStamps.filter((s) => s.key !== key);
+    setUserStamps(lista);
+    localStorage.setItem("carimbos", JSON.stringify(lista));
+  };
 
   // ---- ações ----
   const addFiles = async (fileList) => {
@@ -585,6 +757,15 @@ export default function PainelAuditoria() {
     const form = out.getForm();
     const pages = out.getPages();
     let fi = 0;
+    const stampCache = new Map(); // url → PDFImage (embeda cada carimbo 1x por documento)
+    const embedStamp = async (url) => {
+      if (stampCache.has(url)) return stampCache.get(url);
+      const bytes = await (await fetch(url)).arrayBuffer();
+      const isJpg = url.startsWith("data:image/jpeg") || /\.jpe?g($|\?)/i.test(url);
+      const img = isJpg ? await out.embedJpg(bytes) : await out.embedPng(bytes);
+      stampCache.set(url, img);
+      return img;
+    };
     for (const [pg, list] of Object.entries(d.annotations)) {
       const pageObj = pages[pg - 1]; if (!pageObj) continue;
       const H = pageObj.getHeight();
@@ -608,6 +789,9 @@ export default function PainelAuditoria() {
             x: a.x, y: H - a.y - h, width: w, height: h,
             textColor: hexRgb(a.color), borderWidth: 0,
           });
+        } else if (a.type === "stamp") {
+          const img = await embedStamp(a.url);
+          pageObj.drawImage(img, { x: a.x, y: H - a.y - a.h, width: a.w, height: a.h });
         }
       }
     }
@@ -696,6 +880,14 @@ export default function PainelAuditoria() {
               <Icon className="w-4 h-4" /><span className="hidden sm:inline">{label}</span>
             </button>
           ))}
+          <button onClick={() => { if (getActive()) setStampsOpen(true); }} title="Carimbo"
+            disabled={!active}
+            className={"flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-sm border font-semibold transition-colors whitespace-nowrap disabled:opacity-40 " +
+              (stampsOpen
+                ? "bg-[var(--accent)] border-[var(--accent)] text-[var(--accent-contrast)]"
+                : "bg-[var(--surface)] border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)]")}>
+            <Stamp className="w-4 h-4" /><span className="hidden sm:inline">Carimbo</span>
+          </button>
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5 pr-2 md:pr-3 border-r border-[var(--border)]">
@@ -824,11 +1016,23 @@ export default function PainelAuditoria() {
                   onPointerCancel={onUp} onDoubleClick={onDblClick}
                   className="absolute top-0 left-0 rounded"
                   style={{ cursor: tool === "text" ? "text" : (tool === "strike" || tool === "highlight") ? "crosshair" : "grab", touchAction: "none" }} />
-                {/* camada de caixas de texto (pointer-events só nas caixas) */}
+                {/* camada de caixas de texto e carimbos (pointer-events só nos elementos) */}
                 <div className="absolute top-0 left-0 w-full h-full" style={{ pointerEvents: "none" }}>
                   {(active.annotations[page] || [])
-                    .filter((a) => a.type === "text")
-                    .map((a) => (
+                    .filter((a) => a.type === "text" || a.type === "stamp")
+                    .map((a) => a.type === "stamp" ? (
+                      <StampBox
+                        key={a.id}
+                        a={a}
+                        scale={scale}
+                        selected={selectedId === a.id}
+                        interactive={tool !== "strike" && tool !== "highlight"}
+                        onMove={(x, y) => moveText(a.id, x, y)}
+                        onResize={(w, h) => resizeStamp(a.id, w, h)}
+                        onSelect={() => setSelectedId(a.id)}
+                        onDelete={() => deleteText(a.id)}
+                      />
+                    ) : (
                       <TextBox
                         key={a.id}
                         a={a}
@@ -845,6 +1049,7 @@ export default function PainelAuditoria() {
                         onSelect={() => setSelectedId(a.id)}
                         onDelete={() => deleteText(a.id)}
                         onCancel={() => cancelText(a.id)}
+                        onDuplicate={() => duplicateText(a.id)}
                       />
                     ))}
                 </div>
@@ -853,6 +1058,56 @@ export default function PainelAuditoria() {
           )}
         </main>
       </div>
+
+      {/* painel de carimbos */}
+      {stampsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setStampsOpen(false)} />
+          <div className="relative bg-[var(--surface)] rounded-xl shadow-2xl p-4 w-full max-w-md max-h-[80vh] overflow-auto maida-scroll border border-[var(--border)]">
+            <div className="flex items-center justify-between mb-3">
+              <b className="text-[var(--text)]">Escolha o seu carimbo</b>
+              <button onClick={() => setStampsOpen(false)} title="Fechar"
+                className="w-8 h-8 flex items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--hover)]">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {allStamps.length === 0 && (
+              <p className="text-sm text-[var(--muted)] mb-3 leading-relaxed">
+                Nenhum carimbo neste dispositivo ainda. Clique em <b>Adicionar carimbo</b> e
+                escolha a imagem (PNG) do seu carimbo — ela fica salva <b>somente neste navegador</b>,
+                não é enviada para nenhum servidor.
+              </p>
+            )}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              {allStamps.map((s) => (
+                <div key={s.key}
+                  onClick={(e) => {
+                    const img = e.currentTarget.querySelector("img");
+                    addStamp(s, img && img.naturalWidth ? img.naturalHeight / img.naturalWidth : 0.4);
+                  }}
+                  className="relative border border-[var(--border)] rounded-lg p-2 cursor-pointer bg-white hover:border-[var(--accent)] hover:shadow">
+                  <img src={s.url} alt={s.nome} draggable={false}
+                    className="w-full h-16 object-contain pointer-events-none" />
+                  <div className="text-xs font-bold text-center mt-1.5 truncate text-slate-800">{s.nome}</div>
+                  {s.local && (
+                    <button onClick={(ev) => { ev.stopPropagation(); removeUserStamp(s.key); }}
+                      title="Remover deste dispositivo"
+                      className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-red-600 text-white text-xs shadow">
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button onClick={() => stampFileRef.current.click()}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)]">
+              <FilePlus className="w-4 h-4" />Adicionar carimbo (fica só neste dispositivo)
+            </button>
+            <input ref={stampFileRef} type="file" accept="image/png,image/jpeg" hidden
+              onChange={(e) => { const f = e.target.files[0]; if (f) addUserStamp(f); e.target.value = ""; }} />
+          </div>
+        </div>
+      )}
 
       {/* footer */}
       <footer className="flex flex-wrap items-center justify-center gap-2 md:gap-3 px-2 md:px-4 py-1.5 bg-[var(--surface)] border-t border-[var(--border)] text-xs text-[var(--muted)]">
