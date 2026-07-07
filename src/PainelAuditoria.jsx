@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import {
   FilePlus, Folder, Undo2, Trash2, Save, Download,
   ChevronLeft, ChevronRight, Minus, Plus, Pencil, Type, Highlighter,
-  Moon, Sun, Stamp, Copy, X,
+  Moon, Sun, Stamp, Copy, X, Redo2,
 } from "lucide-react";
 import "./PainelAuditoria.css";
 
@@ -367,6 +367,7 @@ export default function PainelAuditoria() {
   const drawing = useRef(false);
   const startPt = useRef(null);
   const panning = useRef(null); // arrastar para navegar no modo neutro
+  const redo = useRef([]);      // pilha de refazer: { docId, page, ann }
   const focal = useRef(null);   // ponto (coords doc) a centralizar após mudar o zoom
   const lastTap = useRef(null); // detecção de duplo toque
   const pointers = useRef(new Map()); // ponteiros ativos no overlay
@@ -578,7 +579,7 @@ export default function PainelAuditoria() {
         ? { type: "strike", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color, thickness }
         : { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color };
       (doc.annotations[page] = doc.annotations[page] || []).push(a);
-      doc.saved = false; tick();
+      doc.saved = false; redo.current = []; tick();
     }
     drawOverlay();
   };
@@ -593,7 +594,7 @@ export default function PainelAuditoria() {
     (doc.annotations[page] = doc.annotations[page] || []).push({
       type: "text", id, x: p.x, y: p.y, text: "", size: 16, color, w: 120, h: 24,
     });
-    doc.saved = false; editOrig.current = "";
+    doc.saved = false; editOrig.current = ""; redo.current = [];
     setSelectedId(id); setEditingId(id); tick();
   };
   // seleciona ferramenta; clicar de novo na ativa desmarca (modo neutro = navegar)
@@ -652,7 +653,7 @@ export default function PainelAuditoria() {
     const prefix = a.type === "stamp" ? "s" : "t";
     const novo = { ...a, id: prefix + ++textSeq.current, x: a.x + 15, y: a.y + 15 };
     (doc.annotations[page] = doc.annotations[page] || []).push(novo);
-    doc.saved = false;
+    doc.saved = false; redo.current = [];
     setSelectedId(novo.id); tick();
   };
 
@@ -669,7 +670,7 @@ export default function PainelAuditoria() {
     (doc.annotations[page] = doc.annotations[page] || []).push({
       type: "stamp", id, x: Math.max(0, x), y: Math.max(0, y), w, h, url: stamp.url,
     });
-    doc.saved = false;
+    doc.saved = false; redo.current = [];
     setSelectedId(id); setStampsOpen(false); setTool("select"); tick();
   };
   const resizeStamp = (id, w, h) => {
@@ -735,7 +736,17 @@ export default function PainelAuditoria() {
   };
   const undo = () => {
     const d = getActive(); const l = d && d.annotations[page];
-    if (l && l.length) { l.pop(); drawOverlay(); tick(); }
+    if (l && l.length) {
+      const ann = l.pop();
+      redo.current.push({ docId: activeId, page, ann });
+      setSelectedId(null); drawOverlay(); tick();
+    }
+  };
+  const redoAction = () => {
+    const item = redo.current.pop(); if (!item) return;
+    const d = store.current.docs.find((x) => x.id === item.docId); if (!d) return;
+    (d.annotations[item.page] = d.annotations[item.page] || []).push(item.ann);
+    drawOverlay(); tick();
   };
   const clearPage = () => {
     const d = getActive();
@@ -749,7 +760,7 @@ export default function PainelAuditoria() {
 
   // atalhos de teclado (lê versão atual via ref)
   const kb = useRef({});
-  kb.current = { undo, prevPage, nextPage, deleteText, editingId, selectedId };
+  kb.current = { undo, redoAction, prevPage, nextPage, deleteText, editingId, selectedId };
   useEffect(() => {
     const h = (e) => {
       // não interferir enquanto o usuário digita num campo
@@ -758,7 +769,8 @@ export default function PainelAuditoria() {
       if ((e.key === "Delete" || e.key === "Backspace") && kb.current.selectedId && !kb.current.editingId) {
         e.preventDefault(); kb.current.deleteText(kb.current.selectedId); return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); kb.current.undo(); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); kb.current.undo(); }
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); kb.current.redoAction(); }
       if (e.key === "ArrowLeft") kb.current.prevPage();
       if (e.key === "ArrowRight") kb.current.nextPage();
     };
@@ -797,7 +809,7 @@ export default function PainelAuditoria() {
           const yTop = Math.min(a.y1, a.y2), h = Math.abs(a.y2 - a.y1);
           pageObj.drawRectangle({ x, y: H - yTop - h, width: w, height: h, color: hexRgb(a.color || "#ffd600"), opacity: 0.38 });
         } else if (a.type === "text") {
-          // campo de formulário editável (o destinatário pode alterar no leitor de PDF)
+          // criado como campo só para gerar a aparência; será achatado (flatten) no fim
           const tf = form.createTextField(`auditoria_${pg}_${fi++}`);
           // /DA é obrigatório: sem ele o setFontSize/save lança MissingDAEntryError
           tf.acroField.setDefaultAppearance("/Helv 0 Tf 0 g");
@@ -817,6 +829,8 @@ export default function PainelAuditoria() {
       }
     }
     try { form.updateFieldAppearances(font); } catch { /* usa aparência padrão */ }
+    // achata os campos → texto vira impresso: não editável e sem realce/fundo no leitor
+    try { form.flatten(); } catch { /* sem campos ou já achatado */ }
     return out.save();
   };
   const outName = (n) => n.replace(/\.pdf$/i, "") + " - AUDITADO.pdf";
@@ -940,6 +954,10 @@ export default function PainelAuditoria() {
           <button onClick={undo} disabled={!hasMarks} title="Desfazer"
             className="flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
             <Undo2 className="w-4 h-4" /><span className="hidden sm:inline">Desfazer</span>
+          </button>
+          <button onClick={redoAction} disabled={redo.current.length === 0} title="Refazer"
+            className="flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
+            <Redo2 className="w-4 h-4" /><span className="hidden sm:inline">Refazer</span>
           </button>
           <button onClick={clearPage} disabled={!hasMarks} title="Limpar página"
             className="flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
