@@ -16,6 +16,12 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 const LOGO_MAIDA =
   "https://maida.health/wp-content/themes/melhortema/assets/images/logo-light.svg";
 
+// hex → rgba com transparência (para o canvas)
+const hexA = (h, al) => {
+  const n = parseInt(h.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${al})`;
+};
+
 
 // botão redondo (× fechar / excluir)
 function RoundBtn({ style, title, onAction, bg, children }) {
@@ -226,6 +232,10 @@ export default function PainelAuditoria() {
   const drawing = useRef(false);
   const startPt = useRef(null);
   const panning = useRef(null); // arrastar para navegar no modo neutro
+  const focal = useRef(null);   // ponto (coords doc) a centralizar após mudar o zoom
+  const lastTap = useRef(null); // detecção de duplo toque
+  const pointers = useRef(new Map()); // ponteiros ativos no overlay
+  const pinch = useRef(null);   // estado da pinça (2 dedos)
 
   const getActive = () => store.current.docs.find((d) => d.id === activeId);
 
@@ -266,6 +276,13 @@ export default function PainelAuditoria() {
       b.height = o.height = Math.floor(vp.height);
       await pageObj.render({ canvasContext: b.getContext("2d"), viewport: vp }).promise;
       drawOverlay();
+      // centraliza no ponto do zoom (duplo clique/toque ou pinça)
+      if (focal.current && mainRef.current) {
+        const m = mainRef.current, f = focal.current;
+        m.scrollLeft = f.x * scale - m.clientWidth / 2;
+        m.scrollTop = f.y * scale - m.clientHeight / 2;
+        focal.current = null;
+      }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -280,7 +297,7 @@ export default function PainelAuditoria() {
     } else if (a.type === "highlight") {
       const x = Math.min(a.x1, a.x2) * s, y = Math.min(a.y1, a.y2) * s;
       const w = Math.abs(a.x2 - a.x1) * s, h = Math.abs(a.y2 - a.y1) * s;
-      ctx.fillStyle = "rgba(255,214,0,.38)"; ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = hexA(a.color || "#ffd600", 0.38); ctx.fillRect(x, y, w, h);
     }
     // texto é renderizado como caixa DOM (ver TextBox), não no canvas
   };
@@ -298,10 +315,64 @@ export default function PainelAuditoria() {
     return { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale };
   };
 
-  // ---- desenho ----
+  // ---- zoom no ponto (duplo clique/toque) ----
+  const zoomAt = (p) => {
+    const m = mainRef.current, b = baseRef.current;
+    if (!m || !b) return;
+    let novo;
+    if (scale < 2.99) novo = Math.min(3, scale * 1.5);
+    else {
+      // já no máximo: volta ao ajuste de largura
+      const pageW = b.width / scale;
+      novo = Math.min(1.3, Math.max(0.5, (m.clientWidth - 32) / pageW));
+    }
+    if (Math.abs(novo - scale) < 0.01) return;
+    focal.current = p;
+    setScale(novo);
+  };
+  const onDblClick = (e) => {
+    if (tool === "text") return; // no modo texto o clique cria/edita caixas
+    zoomAt(toDoc(e));
+  };
+
+  // ---- pinça (2 dedos) ----
+  const pinchDist = () => {
+    const pts = [...pointers.current.values()];
+    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+  };
+  const pinchMid = () => {
+    const pts = [...pointers.current.values()];
+    return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+  };
+
+  // ---- desenho / navegação ----
   const onDown = (e) => {
     const doc = getActive(); if (!doc) return;
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    e.currentTarget.setPointerCapture(e.pointerId);
+    if (pointers.current.size === 2) {
+      // 2º dedo: vira pinça — cancela desenho/pan em andamento
+      drawing.current = false; panning.current = null; drawOverlay();
+      const mid = pinchMid();
+      const r = overlayRef.current.getBoundingClientRect();
+      pinch.current = {
+        d0: pinchDist(), scale0: scale, k: 1,
+        mid: { x: (mid.x - r.left) / scale, y: (mid.y - r.top) / scale },
+      };
+      return;
+    }
+    if (pinch.current) return; // ignora dedos extras durante a pinça
     const p = toDoc(e);
+    // duplo toque → zoom no ponto (no mouse o dblclick nativo cuida disso)
+    if (e.pointerType === "touch") {
+      const t = Date.now(), lt = lastTap.current;
+      lastTap.current = { t, x: e.clientX, y: e.clientY };
+      if (lt && t - lt.t < 350 && Math.hypot(e.clientX - lt.x, e.clientY - lt.y) < 25) {
+        lastTap.current = null;
+        zoomAt(p);
+        return;
+      }
+    }
     if (tool === "text") {
       if (editingId) return;   // já há uma caixa em edição: não cria outra (o blur finaliza)
       addText(p); return;
@@ -311,13 +382,26 @@ export default function PainelAuditoria() {
       // modo neutro: arrastar para navegar pelo documento (mouse ou dedo)
       const m = mainRef.current; if (!m) return;
       panning.current = { x: e.clientX, y: e.clientY, sl: m.scrollLeft, st: m.scrollTop };
-      e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
     drawing.current = true; startPt.current = p;
-    e.currentTarget.setPointerCapture(e.pointerId);
   };
   const onMove = (e) => {
+    if (pointers.current.has(e.pointerId))
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.current && pointers.current.size >= 2) {
+      // preview do zoom via CSS (sem re-renderizar o pdf.js a cada frame)
+      const pc = pinch.current;
+      let k = pinchDist() / pc.d0;
+      k = Math.min(3 / pc.scale0, Math.max(0.5 / pc.scale0, k));
+      pc.k = k;
+      const w = wrapRef.current;
+      if (w) {
+        w.style.transformOrigin = `${pc.mid.x * pc.scale0}px ${pc.mid.y * pc.scale0}px`;
+        w.style.transform = `scale(${k})`;
+      }
+      return;
+    }
     if (panning.current) {
       const m = mainRef.current, pn = panning.current;
       if (m) {
@@ -330,10 +414,22 @@ export default function PainelAuditoria() {
     const p = toDoc(e), s = startPt.current;
     const prev = tool === "strike"
       ? { type: "strike", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color, thickness }
-      : { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y };
+      : { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color };
     drawOverlay(prev);
   };
   const onUp = (e) => {
+    pointers.current.delete(e.pointerId);
+    if (pinch.current) {
+      if (pointers.current.size < 2) {
+        // fim da pinça: aplica o zoom de verdade (1 re-render nítido)
+        const pc = pinch.current; pinch.current = null;
+        const w = wrapRef.current;
+        if (w) { w.style.transform = ""; w.style.transformOrigin = ""; }
+        const novo = Math.min(3, Math.max(0.5, pc.scale0 * pc.k));
+        if (Math.abs(novo - scale) > 0.01) { focal.current = pc.mid; setScale(novo); }
+      }
+      return;
+    }
     if (panning.current) { panning.current = null; return; }
     if (!drawing.current) return;
     drawing.current = false;
@@ -341,7 +437,7 @@ export default function PainelAuditoria() {
     if (Math.hypot(p.x - s.x, p.y - s.y) > 3) {
       const a = tool === "strike"
         ? { type: "strike", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color, thickness }
-        : { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y };
+        : { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color };
       (doc.annotations[page] = doc.annotations[page] || []).push(a);
       doc.saved = false; tick();
     }
@@ -498,7 +594,7 @@ export default function PainelAuditoria() {
         else if (a.type === "highlight") {
           const x = Math.min(a.x1, a.x2), w = Math.abs(a.x2 - a.x1);
           const yTop = Math.min(a.y1, a.y2), h = Math.abs(a.y2 - a.y1);
-          pageObj.drawRectangle({ x, y: H - yTop - h, width: w, height: h, color: rgb(1, 0.84, 0), opacity: 0.38 });
+          pageObj.drawRectangle({ x, y: H - yTop - h, width: w, height: h, color: hexRgb(a.color || "#ffd600"), opacity: 0.38 });
         } else if (a.type === "text") {
           // campo de formulário editável (o destinatário pode alterar no leitor de PDF)
           const tf = form.createTextField(`auditoria_${pg}_${fi++}`);
@@ -658,8 +754,9 @@ export default function PainelAuditoria() {
               </button>
             </div>
             <input ref={fileRef} type="file" accept="application/pdf" multiple hidden
-              onChange={(e) => addFiles(e.target.files)} />
-            <input ref={folderRef} type="file" hidden onChange={(e) => addFiles(e.target.files)} />
+              onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+            <input ref={folderRef} type="file" hidden
+              onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
             <div className="flex justify-between text-xs text-[var(--muted)] mt-2.5">
               <span>{docs.length ? `${marked} de ${docs.length} com marcação` : "0 documentos"}</span>
               <span>{docs.length ? pct + "%" : ""}</span>
@@ -722,6 +819,7 @@ export default function PainelAuditoria() {
               <div ref={wrapRef} className="relative bg-white shadow rounded" style={{ lineHeight: 0 }}>
                 <canvas ref={baseRef} className="block rounded" />
                 <canvas ref={overlayRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
+                  onPointerCancel={onUp} onDoubleClick={onDblClick}
                   className="absolute top-0 left-0 rounded"
                   style={{ cursor: tool === "text" ? "text" : (tool === "strike" || tool === "highlight") ? "crosshair" : "grab", touchAction: "none" }} />
                 {/* camada de caixas de texto (pointer-events só nas caixas) */}
