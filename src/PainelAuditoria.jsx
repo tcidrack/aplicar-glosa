@@ -4,7 +4,7 @@ import {
   ChevronLeft, ChevronRight, Minus, Plus, Pencil, Type, Highlighter,
   Moon, Sun,
 } from "lucide-react";
-import "./PainelGlosa.css";
+import "./PainelAuditoria.css";
 
 // bibliotecas auto-hospedadas (empacotadas no bundle — sem CDN de terceiros)
 import * as pdfjsLib from "pdfjs-dist";
@@ -16,10 +16,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 const LOGO_MAIDA =
   "https://maida.health/wp-content/themes/melhortema/assets/images/logo-light.svg";
 
-const COLORS = [
-  "#d92d20", "#f97316", "#facc15", "#22c55e",
-  "#1f6feb", "#8b5cf6", "#FF0073", "#111827",
-];
 
 // botão redondo (× fechar / excluir)
 function RoundBtn({ style, title, onAction, bg, children }) {
@@ -195,7 +191,7 @@ function TextBox({ a, scale, editing, selected, interactive, onChange, onMove,
   );
 }
 
-export default function PainelGlosa() {
+export default function PainelAuditoria() {
   const ready = true; // libs empacotadas no bundle — sempre disponíveis
   const [loadErr] = useState("");
 
@@ -434,6 +430,21 @@ export default function PainelGlosa() {
     setActiveId(id); setPage(d.page || 1);
     setSidebarOpen(false); // fecha a gaveta no mobile
   };
+  const removeDoc = (id) => {
+    const docs = store.current.docs;
+    const d = docs.find((x) => x.id === id); if (!d) return;
+    const temMarcas = !d.saved && Object.values(d.annotations).some((l) => l.length);
+    if (temMarcas && !window.confirm(`Remover "${d.name}"? As marcações não salvas serão perdidas.`)) return;
+    const idx = docs.findIndex((x) => x.id === id);
+    store.current.docs = docs.filter((x) => x.id !== id);
+    if (id === activeId) {
+      const rest = store.current.docs;
+      const next = rest[idx] || rest[idx - 1] || null;
+      setActiveId(next ? next.id : null);
+      setPage(next ? next.page || 1 : 1);
+    }
+    tick();
+  };
   const undo = () => {
     const d = getActive(); const l = d && d.annotations[page];
     if (l && l.length) { l.pop(); drawOverlay(); tick(); }
@@ -490,7 +501,7 @@ export default function PainelGlosa() {
           pageObj.drawRectangle({ x, y: H - yTop - h, width: w, height: h, color: rgb(1, 0.84, 0), opacity: 0.38 });
         } else if (a.type === "text") {
           // campo de formulário editável (o destinatário pode alterar no leitor de PDF)
-          const tf = form.createTextField(`glosa_${pg}_${fi++}`);
+          const tf = form.createTextField(`auditoria_${pg}_${fi++}`);
           tf.setText(a.text || "");
           tf.setFontSize(a.size);
           const w = a.w || (a.size * ((a.text ? a.text.length : 4)) * 0.55);
@@ -505,7 +516,7 @@ export default function PainelGlosa() {
     try { form.updateFieldAppearances(font); } catch { /* usa aparência padrão */ }
     return out.save();
   };
-  const outName = (n) => n.replace(/\.pdf$/i, "") + " - GLOSADO.pdf";
+  const outName = (n) => n.replace(/\.pdf$/i, "") + " - AUDITADO.pdf";
   const dl = (bytes, name, type = "application/pdf") => {
     const url = URL.createObjectURL(new Blob([bytes], { type }));
     const a = document.createElement("a"); a.href = url; a.download = name; a.click();
@@ -526,7 +537,7 @@ export default function PainelGlosa() {
       const zip = new JSZip();
       for (const d of alvo) { zip.file(outName(d.name), await buildPdf(d)); d.saved = true; }
       const blob = await zip.generateAsync({ type: "blob" });
-      dl(blob, "glosados.zip", "application/zip"); tick();
+      dl(blob, "auditados.zip", "application/zip"); tick();
       setSidebarOpen(false);
     } catch (e) { alert("Erro ao compactar: " + e.message); }
     finally { setSaving(false); }
@@ -550,8 +561,6 @@ export default function PainelGlosa() {
     { id: "highlight", label: "Destaque", Icon: Highlighter },
   ];
 
-  const isCustom = !COLORS.includes(color);
-
   return (
     <div className={"flex flex-col h-screen text-[var(--text)] select-none tema-" + tema}
       style={{ background: "var(--bg)" }}>
@@ -560,7 +569,7 @@ export default function PainelGlosa() {
         <div className="flex items-center gap-2 md:gap-3 min-w-0">
           <img src={LOGO_MAIDA} alt="Maida" className="h-6 md:h-8" />
           <div className="flex flex-col leading-tight text-white min-w-0">
-            <b className="text-sm md:text-base truncate">Painel de Glosa</b>
+            <b className="text-sm md:text-base truncate">Painel de Auditoria</b>
             <span className="text-xs opacity-80 hidden sm:block">Auditoria médica — marcação de cortes em lote</span>
           </div>
         </div>
@@ -577,58 +586,50 @@ export default function PainelGlosa() {
         </div>
       </div>
 
-      {/* toolbar (rolável na horizontal no celular) */}
-      <header className="flex flex-nowrap overflow-x-auto md:flex-wrap md:overflow-visible items-center gap-3 px-3 md:px-4 py-2 bg-[var(--surface)] border-y border-[var(--border)] shadow-sm z-10 maida-scroll">
-        <div className="flex shrink-0 items-center gap-1.5 pr-3 border-r border-[var(--border)]">
+      {/* toolbar (compacta no celular: só ícones, quebra linha se precisar) */}
+      <header className="flex flex-wrap items-center gap-2 md:gap-3 px-2 md:px-4 py-2 bg-[var(--surface)] border-y border-[var(--border)] shadow-sm z-10">
+        <div className="flex shrink-0 items-center gap-1.5 pr-2 md:pr-3 border-r border-[var(--border)]">
           {tools.map(({ id, label, Icon }) => (
-            <button key={id} onClick={() => selectTool(id)}
-              className={"flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border font-semibold transition-colors whitespace-nowrap " +
+            <button key={id} onClick={() => selectTool(id)} title={label}
+              className={"flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-sm border font-semibold transition-colors whitespace-nowrap " +
                 (tool === id
                   ? "bg-[var(--accent)] border-[var(--accent)] text-[var(--accent-contrast)]"
                   : "bg-[var(--surface)] border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)]")}>
-              <Icon className="w-4 h-4" />{label}
+              <Icon className="w-4 h-4" /><span className="hidden sm:inline">{label}</span>
             </button>
           ))}
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5 pr-3 border-r border-[var(--border)]">
-          <span className="text-xs uppercase tracking-wide text-[var(--muted)]">Cor</span>
-          {COLORS.map((c) => (
-            <button key={c} onClick={() => setColor(c)}
-              className={"w-7 h-7 rounded-md border flex items-center justify-center " +
-                (color === c ? "ring-2 ring-[var(--accent)] border-[var(--accent)]" : "border-[var(--border)]")}>
-              <span className="w-3.5 h-3.5 rounded" style={{ background: c }} />
-            </button>
-          ))}
-          <label title="Cor personalizada"
-            className={"w-7 h-7 rounded-md border flex items-center justify-center overflow-hidden " +
-              (isCustom ? "ring-2 ring-[var(--accent)] border-[var(--accent)]" : "border-[var(--border)]")}>
+        <div className="flex shrink-0 items-center gap-1.5 pr-2 md:pr-3 border-r border-[var(--border)]">
+          <span className="text-xs uppercase tracking-wide text-[var(--muted)] hidden sm:inline">Cor</span>
+          <label title="Escolher cor"
+            className="w-8 h-8 rounded-md border flex items-center justify-center overflow-hidden ring-2 ring-[var(--accent)] border-[var(--accent)]">
             <input type="color" value={color} onChange={(e) => setColor(e.target.value)} className="color-input" />
           </label>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2 pr-3 border-r border-[var(--border)]">
-          <span className="text-xs uppercase tracking-wide text-[var(--muted)]">Espessura</span>
+        <div className="flex shrink-0 items-center gap-2 pr-2 md:pr-3 border-r border-[var(--border)]">
+          <span className="text-xs uppercase tracking-wide text-[var(--muted)] hidden sm:inline">Espessura</span>
           <input type="range" min="1" max="5" step="0.5" value={thickness}
-            onChange={(e) => setThickness(parseFloat(e.target.value))} className="w-20"
+            onChange={(e) => setThickness(parseFloat(e.target.value))} className="w-16 md:w-20"
             style={{ accentColor: "var(--accent)" }} />
-          <span className="text-xs text-[var(--muted)] w-5 text-center">{thickness}</span>
+          <span className="text-xs text-[var(--muted)] w-5 text-center hidden sm:inline">{thickness}</span>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5 pr-3 border-r border-[var(--border)]">
-          <button onClick={undo} disabled={!hasMarks}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
-            <Undo2 className="w-4 h-4" />Desfazer
+        <div className="flex shrink-0 items-center gap-1.5 pr-2 md:pr-3 border-r border-[var(--border)]">
+          <button onClick={undo} disabled={!hasMarks} title="Desfazer"
+            className="flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
+            <Undo2 className="w-4 h-4" /><span className="hidden sm:inline">Desfazer</span>
           </button>
-          <button onClick={clearPage} disabled={!hasMarks}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
-            <Trash2 className="w-4 h-4" />Limpar página
+          <button onClick={clearPage} disabled={!hasMarks} title="Limpar página"
+            className="flex items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-sm border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40 whitespace-nowrap">
+            <Trash2 className="w-4 h-4" /><span className="hidden sm:inline">Limpar página</span>
           </button>
         </div>
 
-        <button onClick={saveOne} disabled={!active || saving}
-          className="flex shrink-0 items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-[var(--accent)] text-[var(--accent-contrast)] hover:opacity-90 disabled:opacity-40 whitespace-nowrap">
-          <Save className="w-4 h-4" />Salvar este
+        <button onClick={saveOne} disabled={!active || saving} title="Salvar este"
+          className="flex shrink-0 items-center gap-1.5 px-2.5 md:px-3 py-2 rounded-lg text-sm font-semibold bg-[var(--accent)] text-[var(--accent-contrast)] hover:opacity-90 disabled:opacity-40 whitespace-nowrap">
+          <Save className="w-4 h-4" /><span className="hidden sm:inline">Salvar este</span>
         </button>
       </header>
 
@@ -677,7 +678,14 @@ export default function PainelGlosa() {
                     (d.id === activeId
                       ? "bg-[var(--panel)] border-[var(--accent)]"
                       : "border-transparent hover:bg-[var(--hover)]")}>
-                  <span className={"self-start text-xs font-bold px-2 py-0.5 rounded-full uppercase " + cls}>{txt}</span>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className={"text-xs font-bold px-2 py-0.5 rounded-full uppercase " + cls}>{txt}</span>
+                    <button onClick={(e) => { e.stopPropagation(); removeDoc(d.id); }}
+                      title="Remover da fila"
+                      className="w-7 h-7 flex items-center justify-center rounded-md text-[var(--muted)] hover:text-red-500 hover:bg-[var(--hover)]">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                   <span className="text-sm font-semibold truncate text-[var(--text)]">{d.name}</span>
                 </div>
               );
@@ -687,7 +695,7 @@ export default function PainelGlosa() {
           <div className="p-3 border-t border-[var(--border)]">
             <button onClick={saveAll} disabled={marked === 0 || saving}
               className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-[var(--accent)] text-[var(--accent-contrast)] hover:opacity-90 disabled:opacity-40">
-              <Download className="w-4 h-4" />Baixar todos glosados (.zip)
+              <Download className="w-4 h-4" />Baixar todos auditados (.zip)
             </button>
           </div>
         </aside>
@@ -704,7 +712,7 @@ export default function PainelGlosa() {
                 <h2 className="text-lg text-[var(--text)] font-semibold mb-2">Nenhum documento na fila</h2>
                 <p className="text-sm leading-relaxed text-[var(--muted)]">Clique em <b>PDFs</b> (ou <b>Pasta</b>) para carregar os arquivos.</p>
                 <p className="text-sm leading-relaxed mt-3 text-[var(--muted)]">
-                  Depois <b>arraste o traço</b> sobre cada procedimento a glosar e clique em <b>Salvar este</b>.
+                  Depois <b>arraste o traço</b> sobre cada procedimento a auditar e clique em <b>Salvar este</b>.
                   No fim, <b>baixe todos</b> num .zip.
                 </p>
               </div>

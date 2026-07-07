@@ -1,10 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
-import PainelGlosa from "./PainelGlosa.jsx";
+import PainelAuditoria from "./PainelAuditoria.jsx";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <PainelGlosa />
+    <PainelAuditoria />
   </StrictMode>
 );
