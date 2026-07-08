@@ -5,7 +5,7 @@ import {
   ChevronLeft, ChevronRight, Minus, Plus, Pencil, Type, Highlighter,
   Moon, Sun, Stamp, Copy, X, Redo2, Move,
 } from "lucide-react";
-import "./PainelAuditoria.css";
+import "./EditorAuditoria.css";
 
 // bibliotecas auto-hospedadas (empacotadas no bundle — sem CDN de terceiros)
 import * as pdfjsLib from "pdfjs-dist";
@@ -339,7 +339,7 @@ function StampBox({ a, scale, selected, interactive, onMove, onResize, onSelect,
   );
 }
 
-export default function PainelAuditoria() {
+export default function EditorAuditoria() {
   const ready = true; // libs empacotadas no bundle — sempre disponíveis
   const [loadErr] = useState("");
 
