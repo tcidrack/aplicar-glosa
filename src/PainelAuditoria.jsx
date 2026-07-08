@@ -525,10 +525,16 @@ export default function PainelAuditoria() {
     }
     if (tool === "text") {
       if (editingId) return;   // já há uma caixa em edição: não cria outra (o blur finaliza)
-      // flushSync + foco síncrono dentro do gesto → abre o teclado no celular
-      flushSync(() => addText(p));
-      const inp = wrapRef.current && wrapRef.current.querySelector("input");
-      if (inp) inp.focus();
+      if (e.pointerType === "touch") {
+        // mobile: flushSync + foco síncrono dentro do gesto → abre o teclado
+        flushSync(() => addText(p));
+        const inp = wrapRef.current && wrapRef.current.querySelector("input");
+        if (inp) inp.focus();
+      } else {
+        // desktop: cria a caixa; o requestAnimationFrame do TextBox aplica o foco.
+        // (foco síncrono aqui seria perdido pelo blur da ação padrão do mousedown)
+        addText(p);
+      }
       return;
     }
     setSelectedId(null);
