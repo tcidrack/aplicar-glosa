@@ -904,7 +904,7 @@ export default function PainelAuditoria() {
         <div className="flex items-center gap-2 md:gap-3 min-w-0">
           <img src={LOGO_MAIDA} alt="Maida" className="h-6 md:h-8" />
           <div className="flex flex-col leading-tight text-white min-w-0">
-            <b className="text-sm md:text-base truncate">Painel de Auditoria</b>
+            <b className="text-sm md:text-base truncate">Editor de Auditoria</b>
             <span className="text-xs opacity-80 hidden sm:block">Auditoria médica — marcação de cortes em lote</span>
           </div>
         </div>
