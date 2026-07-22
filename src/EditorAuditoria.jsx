@@ -3,14 +3,14 @@ import { flushSync } from "react-dom";
 import {
   FilePlus, Folder, Undo2, Trash2, Save, Download,
   ChevronLeft, ChevronRight, Minus, Plus, Pencil, Type, Highlighter,
-  Moon, Sun, Stamp, Copy, X, Redo2, Move,
+  Moon, Sun, Stamp, Copy, X, Redo2, Move, Check, Eraser,
 } from "lucide-react";
 import "./EditorAuditoria.css";
 
 // bibliotecas auto-hospedadas (empacotadas no bundle — sem CDN de terceiros)
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.js?url";
-import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import { PDFDocument, rgb, StandardFonts, LineCapStyle } from "pdf-lib";
 import JSZip from "jszip";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -339,6 +339,119 @@ function StampBox({ a, scale, selected, interactive, onMove, onResize, onSelect,
   );
 }
 
+// ---- símbolo ✓ / ✗ (marca de verificado): mover, redimensionar e excluir ----
+// desenhado como vetor (SVG na tela, drawLine no PDF) — nítido em qualquer zoom
+function SymbolBox({ a, scale, selected, interactive, onMove, onResize, onSelect, onDelete, onDuplicate }) {
+  const boxRef = useRef(null);
+  const drag = useRef(null);
+  const rez = useRef(null);
+  const [hover, setHover] = useState(false);
+  const px = a.size * scale;
+
+  const startDrag = (e) => {
+    e.stopPropagation();
+    onSelect();
+    drag.current = { px: e.clientX, py: e.clientY, x: a.x, y: a.y };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const moveDrag = (e) => {
+    if (!drag.current) return;
+    const d = drag.current;
+    onMove(Math.max(0, d.x + (e.clientX - d.px) / scale),
+           Math.max(0, d.y + (e.clientY - d.py) / scale));
+  };
+  const endDrag = () => { drag.current = null; };
+
+  const startResize = (e) => {
+    e.stopPropagation();
+    const r = boxRef.current.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    rez.current = { cx, cy, startSize: a.size,
+      startDist: Math.hypot(e.clientX - cx, e.clientY - cy) || 1 };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const moveResize = (e) => {
+    const rc = rez.current; if (!rc) return;
+    const dist = Math.hypot(e.clientX - rc.cx, e.clientY - rc.cy);
+    onResize(Math.max(10, Math.min(200, rc.startSize * (dist / rc.startDist))));
+  };
+  const endResize = () => { rez.current = null; };
+
+  const Icon = a.symbol === "cross" ? X : Check;
+  const showBox = selected || hover;
+  const handles = [
+    { key: "tl", pos: { top: -8, left: -8, cursor: "nwse-resize" } },
+    { key: "br", pos: { bottom: -8, right: -8, cursor: "nwse-resize" } },
+  ];
+  return (
+    <div
+      ref={boxRef}
+      onPointerDown={startDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={interactive ? "Arraste p/ mover · cantos p/ tamanho" : undefined}
+      style={{
+        position: "absolute",
+        left: a.x * scale,
+        top: a.y * scale,
+        width: px,
+        height: px,
+        cursor: interactive ? "move" : "default",
+        borderRadius: 5,
+        border: showBox ? "1.5px dashed var(--accent)" : "1.5px solid transparent",
+        pointerEvents: interactive ? "auto" : "none",
+        touchAction: "none",
+        userSelect: "none",
+      }}
+    >
+      <Icon style={{ width: "100%", height: "100%", color: a.color, strokeWidth: 3, pointerEvents: "none" }} />
+      {selected && interactive && (
+        <>
+          <RoundBtn bg="#d92d20" title="Excluir" onAction={onDelete}
+            style={{ top: -10, right: -10 }}>×</RoundBtn>
+          <RoundBtn bg="#1f6feb" title="Duplicar" onAction={onDuplicate}
+            style={{ top: -10, left: -10 }}>
+            <Copy style={{ width: 12, height: 12, margin: "0 auto" }} />
+          </RoundBtn>
+          {handles.map((h) => (
+            <div
+              key={h.key}
+              onPointerDown={startResize}
+              onPointerMove={moveResize}
+              onPointerUp={endResize}
+              style={{
+                position: "absolute", width: 16, height: 16, borderRadius: 4,
+                background: "#fff", border: "1.5px solid var(--accent)",
+                boxShadow: "0 1px 3px rgba(0,0,0,.3)", zIndex: 2,
+                touchAction: "none", ...h.pos,
+              }}
+            />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+// segmentos vetoriais do símbolo (coords locais 0..size); usados na exportação p/ PDF
+const symbolSegs = (sym, size) =>
+  sym === "cross"
+    ? [[{ x: 0.22, y: 0.22 }, { x: 0.78, y: 0.78 }], [{ x: 0.78, y: 0.22 }, { x: 0.22, y: 0.78 }]]
+        .map((seg) => seg.map((p) => ({ x: p.x * size, y: p.y * size })))
+    : [[{ x: 0.20, y: 0.55 }, { x: 0.42, y: 0.78 }], [{ x: 0.42, y: 0.78 }, { x: 0.82, y: 0.24 }]]
+        .map((seg) => seg.map((p) => ({ x: p.x * size, y: p.y * size })));
+
+// distância de um ponto p ao segmento a–b (para o hit-test da borracha)
+const distToSeg = (p, a, b) => {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+};
+
 export default function EditorAuditoria() {
   const ready = true; // libs empacotadas no bundle — sempre disponíveis
   const [loadErr] = useState("");
@@ -351,9 +464,10 @@ export default function EditorAuditoria() {
   const [activeId, setActiveId] = useState(null);
   const [page, setPage] = useState(1);
   const [scale, setScale] = useState(1.3);
-  const [tool, setTool] = useState("strike");
+  const [tool, setTool] = useState("pen");
   const [color, setColor] = useState("#d92d20");
   const [thickness, setThickness] = useState(2);
+  const [checkSymbol, setCheckSymbol] = useState("check"); // símbolo ativo: "check" | "cross"
   const [saving, setSaving] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stampsOpen, setStampsOpen] = useState(false);
@@ -380,6 +494,7 @@ export default function EditorAuditoria() {
   const stampFileRef = useRef(null);
   const drawing = useRef(false);
   const startPt = useRef(null);
+  const penPts = useRef(null);    // pontos do traço livre em andamento (canetinha)
   const panning = useRef(null); // arrastar para navegar no modo neutro
   const redo = useRef([]);      // pilha de refazer: { docId, page, ann }
   const focal = useRef(null);   // ponto (coords doc) a centralizar após mudar o zoom
@@ -388,6 +503,47 @@ export default function EditorAuditoria() {
   const pinch = useRef(null);   // estado da pinça (2 dedos)
 
   const getActive = () => store.current.docs.find((d) => d.id === activeId);
+
+  // ferramentas de desenho/marcação: enquanto ativas, as caixas DOM ficam não-interativas
+  const isDrawTool = ["pen", "line", "highlight", "check", "eraser"].includes(tool);
+
+  // ---- borracha: acha a anotação sob o ponto (de cima p/ baixo) ----
+  const hitAnnotation = (p) => {
+    const doc = getActive(); if (!doc) return null;
+    const list = doc.annotations[page] || [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const a = list[i];
+      if (a.type === "pen") {
+        const lim = Math.max(6, a.thickness * 1.5) / scale;
+        const pts = a.points || [];
+        for (let j = 1; j < pts.length; j++)
+          if (distToSeg(p, pts[j - 1], pts[j]) <= lim) return a;
+      } else if (a.type === "strike") {
+        const lim = Math.max(6, a.thickness * 1.5) / scale;
+        if (distToSeg(p, { x: a.x1, y: a.y1 }, { x: a.x2, y: a.y2 }) <= lim) return a;
+      } else if (a.type === "highlight") {
+        const x0 = Math.min(a.x1, a.x2), x1 = Math.max(a.x1, a.x2);
+        const y0 = Math.min(a.y1, a.y2), y1 = Math.max(a.y1, a.y2);
+        if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) return a;
+      } else {
+        // text / stamp / symbol — caixa x,y,w/h (símbolo é quadrado: size×size)
+        const w = a.type === "symbol" ? a.size : (a.w || 0);
+        const h = a.type === "symbol" ? a.size : (a.h || 0);
+        const m = 4 / scale; // margem de tolerância
+        if (p.x >= a.x - m && p.x <= a.x + w + m && p.y >= a.y - m && p.y <= a.y + h + m) return a;
+      }
+    }
+    return null;
+  };
+  // remove uma anotação específica (por referência) — usada pela borracha
+  const eraseAt = (p) => {
+    const doc = getActive(); if (!doc) return false;
+    const alvo = hitAnnotation(p); if (!alvo) return false;
+    doc.annotations[page] = (doc.annotations[page] || []).filter((x) => x !== alvo);
+    doc.saved = false;
+    if (alvo.id && selectedId === alvo.id) setSelectedId(null);
+    return true;
+  };
 
   // ---- folder input attribute ----
   useEffect(() => {
@@ -444,6 +600,13 @@ export default function EditorAuditoria() {
     if (a.type === "strike") {
       ctx.strokeStyle = a.color; ctx.lineWidth = a.thickness * s; ctx.lineCap = "round";
       ctx.beginPath(); ctx.moveTo(a.x1 * s, a.y1 * s); ctx.lineTo(a.x2 * s, a.y2 * s); ctx.stroke();
+    } else if (a.type === "pen") {
+      const pts = a.points || []; if (pts.length < 2) return;
+      ctx.strokeStyle = a.color; ctx.lineWidth = a.thickness * s;
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.beginPath(); ctx.moveTo(pts[0].x * s, pts[0].y * s);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * s, pts[i].y * s);
+      ctx.stroke();
     } else if (a.type === "highlight") {
       const x = Math.min(a.x1, a.x2) * s, y = Math.min(a.y1, a.y2) * s;
       const w = Math.abs(a.x2 - a.x1) * s, h = Math.abs(a.y2 - a.y1) * s;
@@ -537,8 +700,26 @@ export default function EditorAuditoria() {
       }
       return;
     }
+    if (tool === "check") {
+      addSymbol(p); // marca ✓/✗; mantém a ferramenta ativa para marcar vários campos
+      return;
+    }
     setSelectedId(null);
-    if (tool !== "strike" && tool !== "highlight") {
+    if (tool === "line") {
+      addLine(p);   // linha horizontal de largura total na altura clicada
+      return;
+    }
+    if (tool === "eraser") {
+      // apaga o item sob o ponteiro; arrastar (drawing) apaga vários
+      drawing.current = true;
+      if (eraseAt(p)) { drawOverlay(); tick(); }
+      return;
+    }
+    if (tool === "pen") {
+      drawing.current = true; penPts.current = [p];
+      return;
+    }
+    if (tool !== "highlight") {
       // modo neutro: arrastar para navegar pelo documento (mouse ou dedo)
       const m = mainRef.current; if (!m) return;
       panning.current = { x: e.clientX, y: e.clientY, sl: m.scrollLeft, st: m.scrollTop };
@@ -571,11 +752,19 @@ export default function EditorAuditoria() {
       return;
     }
     if (!drawing.current) return;
-    const p = toDoc(e), s = startPt.current;
-    const prev = tool === "strike"
-      ? { type: "strike", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color, thickness }
-      : { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color };
-    drawOverlay(prev);
+    const p = toDoc(e);
+    if (tool === "eraser") {
+      if (eraseAt(p)) { drawOverlay(); tick(); }
+      return;
+    }
+    if (tool === "pen") {
+      const pts = penPts.current; if (!pts) return;
+      pts.push(p);
+      drawOverlay({ type: "pen", points: pts, color, thickness });
+      return;
+    }
+    const s = startPt.current;
+    drawOverlay({ type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color });
   };
   const onUp = (e) => {
     pointers.current.delete(e.pointerId);
@@ -593,16 +782,46 @@ export default function EditorAuditoria() {
     if (panning.current) { panning.current = null; return; }
     if (!drawing.current) return;
     drawing.current = false;
+    if (tool === "eraser") { drawOverlay(); return; } // já apagou no down/move
     const p = toDoc(e), s = startPt.current, doc = getActive();
+    if (tool === "pen") {
+      const pts = penPts.current; penPts.current = null;
+      if (pts && pts.length > 1) {
+        (doc.annotations[page] = doc.annotations[page] || []).push({
+          type: "pen", points: pts, color, thickness,
+        });
+        doc.saved = false; redo.current = []; tick();
+      }
+      drawOverlay();
+      return;
+    }
     if (Math.hypot(p.x - s.x, p.y - s.y) > 3) {
-      const a = tool === "strike"
-        ? { type: "strike", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color, thickness }
-        : { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color };
-      (doc.annotations[page] = doc.annotations[page] || []).push(a);
+      (doc.annotations[page] = doc.annotations[page] || []).push(
+        { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color });
       doc.saved = false; redo.current = []; tick();
     }
     drawOverlay();
   };
+  // ---- linha-guia horizontal (1 clique atravessa a largura da página) ----
+  const addLine = (p) => {
+    const doc = getActive(); if (!doc) return;
+    const larguraDoc = baseRef.current ? baseRef.current.width / scale : 1000;
+    (doc.annotations[page] = doc.annotations[page] || []).push(
+      { type: "strike", x1: 0, y1: p.y, x2: larguraDoc, y2: p.y, color, thickness });
+    doc.saved = false; redo.current = []; drawOverlay(); tick();
+  };
+
+  // ---- marca de verificado ✓/✗ (símbolo vetorial, movível) ----
+  const addSymbol = (p) => {
+    const doc = getActive(); if (!doc) return;
+    const size = Math.max(14, Math.round(22 / scale));
+    const id = "y" + ++textSeq.current;
+    (doc.annotations[page] = doc.annotations[page] || []).push(
+      { type: "symbol", id, symbol: checkSymbol, x: p.x, y: p.y, size, color });
+    doc.saved = false; redo.current = [];
+    setSelectedId(id); tick();
+  };
+
   // ---- caixas de texto (estilo Canva) ----
   const findText = (id) => {
     const d = getActive(); if (!d) return null;
@@ -824,7 +1043,23 @@ export default function EditorAuditoria() {
       for (const a of list) {
         if (a.type === "strike")
           pageObj.drawLine({ start: { x: a.x1, y: H - a.y1 }, end: { x: a.x2, y: H - a.y2 }, thickness: a.thickness, color: hexRgb(a.color) });
-        else if (a.type === "highlight") {
+        else if (a.type === "pen") {
+          const pts = a.points || [];
+          for (let i = 1; i < pts.length; i++)
+            pageObj.drawLine({
+              start: { x: pts[i - 1].x, y: H - pts[i - 1].y },
+              end: { x: pts[i].x, y: H - pts[i].y },
+              thickness: a.thickness, color: hexRgb(a.color), lineCap: LineCapStyle.Round,
+            });
+        } else if (a.type === "symbol") {
+          const th = Math.max(1.5, a.size * 0.12);
+          for (const seg of symbolSegs(a.symbol, a.size))
+            pageObj.drawLine({
+              start: { x: a.x + seg[0].x, y: H - a.y - seg[0].y },
+              end: { x: a.x + seg[1].x, y: H - a.y - seg[1].y },
+              thickness: th, color: hexRgb(a.color), lineCap: LineCapStyle.Round,
+            });
+        } else if (a.type === "highlight") {
           const x = Math.min(a.x1, a.x2), w = Math.abs(a.x2 - a.x1);
           const yTop = Math.min(a.y1, a.y2), h = Math.abs(a.y2 - a.y1);
           pageObj.drawRectangle({ x, y: H - yTop - h, width: w, height: h, color: hexRgb(a.color || "#ffd600"), opacity: 0.38 });
@@ -897,9 +1132,12 @@ export default function EditorAuditoria() {
   };
 
   const tools = [
-    { id: "strike", label: "Traço", Icon: Pencil },
+    { id: "pen", label: "Desenho", Icon: Pencil },
+    { id: "line", label: "Linha", Icon: Minus },
     { id: "text", label: "Texto", Icon: Type },
     { id: "highlight", label: "Destaque", Icon: Highlighter },
+    { id: "check", label: "Check", Icon: Check },
+    { id: "eraser", label: "Borracha", Icon: Eraser },
   ];
 
   return (
@@ -963,6 +1201,24 @@ export default function EditorAuditoria() {
             onChange={(e) => setThickness(parseFloat(e.target.value))} className="w-16 md:w-20"
             style={{ accentColor: "var(--accent)" }} />
           <span className="text-xs text-[var(--muted)] w-5 text-center hidden sm:inline">{thickness}</span>
+        </div>
+
+        {/* seletor do símbolo de check (✓ / ✗) — usado pela ferramenta Check */}
+        <div className="flex shrink-0 items-center gap-1.5 pr-2 md:pr-3 border-r border-[var(--border)]">
+          <span className="text-xs uppercase tracking-wide text-[var(--muted)] hidden sm:inline">Marca</span>
+          {[
+            { id: "check", Icon: Check, title: "Marca de certo (✓)" },
+            { id: "cross", Icon: X, title: "Marca de errado (✗)" },
+          ].map(({ id, Icon, title }) => (
+            <button key={id} onClick={() => { setCheckSymbol(id); if (tool !== "check") setTool("check"); }}
+              title={title}
+              className={"w-8 h-8 flex items-center justify-center rounded-md border transition-colors " +
+                (checkSymbol === id
+                  ? "bg-[var(--accent)] border-[var(--accent)] text-[var(--accent-contrast)]"
+                  : "bg-[var(--surface)] border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)]")}>
+              <Icon className="w-4 h-4" strokeWidth={3} />
+            </button>
+          ))}
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5 pr-2 md:pr-3 border-r border-[var(--border)]">
@@ -1062,11 +1318,17 @@ export default function EditorAuditoria() {
             <div className="m-auto text-white/70 text-sm">Carregando bibliotecas…</div>
           ) : !active ? (
             <div className="m-auto max-w-md text-center text-[var(--text)]">
-              <div className="border-2 border-dashed border-[var(--border)] rounded-xl p-10 bg-[var(--surface)]">
+              <div onClick={() => fileRef.current.click()} role="button" tabIndex={0}
+                title="Clique para carregar PDFs"
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") fileRef.current.click(); }}
+                className="border-2 border-dashed border-[var(--border)] rounded-xl p-10 bg-[var(--surface)] cursor-pointer transition-colors hover:border-[var(--accent)] hover:bg-[var(--hover)]">
+                <FilePlus className="w-10 h-10 mx-auto mb-3 text-[var(--accent)]" />
                 <h2 className="text-lg text-[var(--text)] font-semibold mb-2">Nenhum documento na fila</h2>
-                <p className="text-sm leading-relaxed text-[var(--muted)]">Clique em <b>PDFs</b> (ou <b>Pasta</b>) para carregar os arquivos.</p>
+                <p className="text-sm leading-relaxed text-[var(--muted)]">
+                  <b>Clique aqui</b> para carregar os PDFs (ou use <b>PDFs</b> / <b>Pasta</b> na lateral).
+                </p>
                 <p className="text-sm leading-relaxed mt-3 text-[var(--muted)]">
-                  Depois <b>arraste o traço</b> sobre cada procedimento a auditar e clique em <b>Salvar este</b>.
+                  Depois <b>marque</b> cada procedimento a auditar e clique em <b>Salvar este</b>.
                   No fim, <b>baixe todos</b> num .zip.
                 </p>
               </div>
@@ -1078,20 +1340,33 @@ export default function EditorAuditoria() {
                 <canvas ref={overlayRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
                   onPointerCancel={onUp} onDoubleClick={onDblClick}
                   className="absolute top-0 left-0 rounded"
-                  style={{ cursor: tool === "text" ? "text" : (tool === "strike" || tool === "highlight") ? "crosshair" : "grab", touchAction: "none" }} />
-                {/* camada de caixas de texto e carimbos (pointer-events só nos elementos) */}
+                  style={{ cursor: tool === "text" ? "text" : isDrawTool ? "crosshair" : "grab", touchAction: "none" }} />
+                {/* camada de caixas de texto, carimbos e símbolos (pointer-events só nos elementos) */}
                 <div className="absolute top-0 left-0 w-full h-full" style={{ pointerEvents: "none" }}>
                   {(active.annotations[page] || [])
-                    .filter((a) => a.type === "text" || a.type === "stamp")
+                    .filter((a) => a.type === "text" || a.type === "stamp" || a.type === "symbol")
                     .map((a) => a.type === "stamp" ? (
                       <StampBox
                         key={a.id}
                         a={a}
                         scale={scale}
                         selected={selectedId === a.id}
-                        interactive={tool !== "strike" && tool !== "highlight"}
+                        interactive={!isDrawTool}
                         onMove={(x, y) => moveText(a.id, x, y)}
                         onResize={(w, h) => resizeStamp(a.id, w, h)}
+                        onSelect={() => setSelectedId(a.id)}
+                        onDelete={() => deleteText(a.id)}
+                        onDuplicate={() => duplicateAnn(a.id)}
+                      />
+                    ) : a.type === "symbol" ? (
+                      <SymbolBox
+                        key={a.id}
+                        a={a}
+                        scale={scale}
+                        selected={selectedId === a.id}
+                        interactive={!isDrawTool}
+                        onMove={(x, y) => moveText(a.id, x, y)}
+                        onResize={(s) => resizeText(a.id, s)}
                         onSelect={() => setSelectedId(a.id)}
                         onDelete={() => deleteText(a.id)}
                         onDuplicate={() => duplicateAnn(a.id)}
@@ -1103,7 +1378,7 @@ export default function EditorAuditoria() {
                         scale={scale}
                         editing={editingId === a.id}
                         selected={selectedId === a.id}
-                        interactive={tool !== "strike" && tool !== "highlight"}
+                        interactive={!isDrawTool}
                         onChange={(t) => updateText(a.id, t)}
                         onMove={(x, y) => moveText(a.id, x, y)}
                         onResize={(s) => resizeText(a.id, s)}
