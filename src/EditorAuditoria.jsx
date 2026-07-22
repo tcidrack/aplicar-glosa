@@ -429,6 +429,90 @@ function SymbolBox({ a, scale, selected, interactive, onMove, onResize, onSelect
               }}
             />
           ))}
+          {/* alça de mover: alvo grande e separado do × (evita excluir sem querer) */}
+          <div
+            onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag}
+            title="Arraste para mover"
+            style={{
+              position: "absolute", bottom: -30, left: "50%", transform: "translateX(-50%)",
+              width: 34, height: 24, borderRadius: 12,
+              background: "var(--accent)", color: "var(--accent-contrast)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 1px 4px rgba(0,0,0,.35)", zIndex: 3, cursor: "move", touchAction: "none",
+            }}
+          >
+            <Move style={{ width: 16, height: 16 }} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- linha-guia horizontal: mover (só vertical), selecionar e excluir ----
+function LineBox({ a, scale, selected, interactive, onMove, onSelect, onDelete }) {
+  const drag = useRef(null);
+  const [hover, setHover] = useState(false);
+  const HIT = 16; // altura da área de toque (a linha é fina demais p/ agarrar)
+
+  const startDrag = (e) => {
+    e.stopPropagation();
+    onSelect();
+    drag.current = { py: e.clientY, y: a.y1 };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const moveDrag = (e) => {
+    if (!drag.current) return;
+    const d = drag.current;
+    onMove(Math.max(0, d.y + (e.clientY - d.py) / scale)); // só vertical
+  };
+  const endDrag = () => { drag.current = null; };
+
+  const showBox = selected || hover;
+  return (
+    <div
+      onPointerDown={startDrag}
+      onPointerMove={moveDrag}
+      onPointerUp={endDrag}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={interactive ? "Arraste para mover (vertical)" : undefined}
+      style={{
+        position: "absolute",
+        left: a.x1 * scale,
+        top: a.y1 * scale - HIT / 2,
+        width: (a.x2 - a.x1) * scale,
+        height: HIT,
+        display: "flex",
+        alignItems: "center",
+        cursor: interactive ? "move" : "default",
+        background: showBox ? "rgba(255,255,255,.10)" : "transparent",
+        pointerEvents: interactive ? "auto" : "none",
+        touchAction: "none",
+        userSelect: "none",
+      }}
+    >
+      {/* linha colorida real, centralizada na área de toque */}
+      <div style={{ width: "100%", height: Math.max(1, a.thickness * scale), background: a.color,
+        borderRadius: 2, pointerEvents: "none" }} />
+      {selected && interactive && (
+        <>
+          <RoundBtn bg="#d92d20" title="Excluir" onAction={onDelete}
+            style={{ top: -20, left: "50%", marginLeft: -11 }}>×</RoundBtn>
+          {/* alça de mover, centralizada abaixo da linha */}
+          <div
+            onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag}
+            title="Arraste para mover"
+            style={{
+              position: "absolute", bottom: -26, left: "50%", transform: "translateX(-50%)",
+              width: 34, height: 24, borderRadius: 12,
+              background: "var(--accent)", color: "var(--accent-contrast)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 1px 4px rgba(0,0,0,.35)", zIndex: 3, cursor: "move", touchAction: "none",
+            }}
+          >
+            <Move style={{ width: 16, height: 16 }} />
+          </div>
         </>
       )}
     </div>
@@ -597,10 +681,8 @@ export default function EditorAuditoria() {
   // ---- overlay ----
   const paint = (ctx, a) => {
     const s = scale;
-    if (a.type === "strike") {
-      ctx.strokeStyle = a.color; ctx.lineWidth = a.thickness * s; ctx.lineCap = "round";
-      ctx.beginPath(); ctx.moveTo(a.x1 * s, a.y1 * s); ctx.lineTo(a.x2 * s, a.y2 * s); ctx.stroke();
-    } else if (a.type === "pen") {
+    // strike (linha-guia) é renderizado como caixa DOM (ver LineBox), não no canvas
+    if (a.type === "pen") {
       const pts = a.points || []; if (pts.length < 2) return;
       ctx.strokeStyle = a.color; ctx.lineWidth = a.thickness * s;
       ctx.lineCap = "round"; ctx.lineJoin = "round";
@@ -806,9 +888,15 @@ export default function EditorAuditoria() {
   const addLine = (p) => {
     const doc = getActive(); if (!doc) return;
     const larguraDoc = baseRef.current ? baseRef.current.width / scale : 1000;
+    const id = "l" + ++textSeq.current;
     (doc.annotations[page] = doc.annotations[page] || []).push(
-      { type: "strike", x1: 0, y1: p.y, x2: larguraDoc, y2: p.y, color, thickness });
-    doc.saved = false; redo.current = []; drawOverlay(); tick();
+      { type: "strike", id, x1: 0, y1: p.y, x2: larguraDoc, y2: p.y, color, thickness });
+    doc.saved = false; redo.current = []; setSelectedId(id); tick();
+  };
+  // move a linha-guia só na vertical (mantém a largura total)
+  const moveLine = (id, y) => {
+    const a = findText(id); if (!a) return;
+    a.y1 = a.y2 = y; getActive().saved = false; tick();
   };
 
   // ---- marca de verificado ✓/✗ (símbolo vetorial, movível) ----
@@ -1341,11 +1429,22 @@ export default function EditorAuditoria() {
                   onPointerCancel={onUp} onDoubleClick={onDblClick}
                   className="absolute top-0 left-0 rounded"
                   style={{ cursor: tool === "text" ? "text" : isDrawTool ? "crosshair" : "grab", touchAction: "none" }} />
-                {/* camada de caixas de texto, carimbos e símbolos (pointer-events só nos elementos) */}
+                {/* camada de linhas, textos, carimbos e símbolos (pointer-events só nos elementos) */}
                 <div className="absolute top-0 left-0 w-full h-full" style={{ pointerEvents: "none" }}>
                   {(active.annotations[page] || [])
-                    .filter((a) => a.type === "text" || a.type === "stamp" || a.type === "symbol")
-                    .map((a) => a.type === "stamp" ? (
+                    .filter((a) => a.type === "text" || a.type === "stamp" || a.type === "symbol" || a.type === "strike")
+                    .map((a) => a.type === "strike" ? (
+                      <LineBox
+                        key={a.id}
+                        a={a}
+                        scale={scale}
+                        selected={selectedId === a.id}
+                        interactive={!isDrawTool}
+                        onMove={(y) => moveLine(a.id, y)}
+                        onSelect={() => setSelectedId(a.id)}
+                        onDelete={() => deleteText(a.id)}
+                      />
+                    ) : a.type === "stamp" ? (
                       <StampBox
                         key={a.id}
                         a={a}
