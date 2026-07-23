@@ -3,7 +3,7 @@ import { flushSync } from "react-dom";
 import {
   FilePlus, Folder, Undo2, Trash2, Save, Download,
   ChevronLeft, ChevronRight, Minus, Plus, Pencil, Type, Highlighter,
-  Moon, Sun, Stamp, Copy, X, Redo2, Move, Check, Eraser,
+  Moon, Sun, Stamp, Copy, X, Redo2, Move, Check, Eraser, ScanText,
 } from "lucide-react";
 import "./EditorAuditoria.css";
 
@@ -563,12 +563,16 @@ export default function EditorAuditoria() {
     setDialog({ title, message, onConfirm, confirmText: opts.confirmText || "Confirmar" });
   const [editingId, setEditingId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [ocr, setOcr] = useState(null); // leitura de código: { x, y, w, h, loading, text, err }
+  const [ocrHold, setOcrHold] = useState(false); // mouse/foco no balão: pausa o fechamento
   const textSeq = useRef(0);
   const editOrig = useRef("");
   const [, tick] = useReducer((x) => x + 1, 0);
 
   // limpa edição/seleção ao trocar de documento ou página
-  useEffect(() => { setEditingId(null); setSelectedId(null); }, [activeId, page]);
+  useEffect(() => {
+    setEditingId(null); setSelectedId(null); setOcr(null); setOcrHold(false);
+  }, [activeId, page]);
 
   // mantém o campo do rodapé em sincronia quando a página muda por fora (setas, troca de doc)
   useEffect(() => { setPageInput(String(page)); }, [page, activeId]);
@@ -593,7 +597,7 @@ export default function EditorAuditoria() {
   const getActive = () => store.current.docs.find((d) => d.id === activeId);
 
   // ferramentas de desenho/marcação: enquanto ativas, as caixas DOM ficam não-interativas
-  const isDrawTool = ["pen", "line", "highlight", "check", "eraser"].includes(tool);
+  const isDrawTool = ["pen", "line", "highlight", "check", "eraser", "ocr"].includes(tool);
 
   // ---- borracha: acha a anotação sob o ponto (de cima p/ baixo) ----
   const hitAnnotation = (p) => {
@@ -697,6 +701,15 @@ export default function EditorAuditoria() {
       const x = Math.min(a.x1, a.x2) * s, y = Math.min(a.y1, a.y2) * s;
       const w = Math.abs(a.x2 - a.x1) * s, h = Math.abs(a.y2 - a.y1) * s;
       ctx.fillStyle = hexA(a.color || "#ffd600", 0.38); ctx.fillRect(x, y, w, h);
+    } else if (a.type === "ocrsel") {
+      // seleção da ferramenta "Copiar código": só preview, nunca vira anotação
+      const x = Math.min(a.x1, a.x2) * s, y = Math.min(a.y1, a.y2) * s;
+      const w = Math.abs(a.x2 - a.x1) * s, h = Math.abs(a.y2 - a.y1) * s;
+      ctx.save();
+      ctx.fillStyle = "rgba(31,111,235,.12)"; ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = "#1f6feb"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
     }
     // texto é renderizado como caixa DOM (ver TextBox), não no canvas
   };
@@ -805,12 +818,13 @@ export default function EditorAuditoria() {
       drawing.current = true; penPts.current = [p];
       return;
     }
-    if (tool !== "highlight") {
+    if (tool !== "highlight" && tool !== "ocr") {
       // modo neutro: arrastar para navegar pelo documento (mouse ou dedo)
       const m = mainRef.current; if (!m) return;
       panning.current = { x: e.clientX, y: e.clientY, sl: m.scrollLeft, st: m.scrollTop };
       return;
     }
+    if (tool === "ocr") { setOcr(null); setOcrHold(false); } // nova leitura: fecha o anterior
     drawing.current = true; startPt.current = p;
   };
   const onMove = (e) => {
@@ -850,7 +864,9 @@ export default function EditorAuditoria() {
       return;
     }
     const s = startPt.current;
-    drawOverlay({ type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color });
+    drawOverlay(tool === "ocr"
+      ? { type: "ocrsel", x1: s.x, y1: s.y, x2: p.x, y2: p.y }
+      : { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color });
   };
   const onUp = (e) => {
     pointers.current.delete(e.pointerId);
@@ -881,6 +897,13 @@ export default function EditorAuditoria() {
       drawOverlay();
       return;
     }
+    if (tool === "ocr") {
+      const x = Math.min(s.x, p.x), y = Math.min(s.y, p.y);
+      const w = Math.abs(p.x - s.x), h = Math.abs(p.y - s.y);
+      drawOverlay();
+      if (w >= 6 && h >= 6) readRegion({ x, y, w, h }); // ignora clique/arraste mínimo
+      return;
+    }
     if (Math.hypot(p.x - s.x, p.y - s.y) > 3) {
       (doc.annotations[page] = doc.annotations[page] || []).push(
         { type: "highlight", x1: s.x, y1: s.y, x2: p.x, y2: p.y, color });
@@ -888,6 +911,100 @@ export default function EditorAuditoria() {
     }
     drawOverlay();
   };
+  // ---- leitura de código (OCR da área selecionada) ----
+  // o tesseract.js é carregado sob demanda (import dinâmico) p/ não pesar o bundle inicial;
+  // o worker fica em cache para as leituras seguintes saírem na hora.
+  // OBS: o motor roda 100% no navegador (nenhum dado do PDF sai daqui), mas o wasm e o
+  // dicionário vêm do CDN da própria lib na 1ª leitura. Para auto-hospedar, basta copiar os
+  // arquivos p/ public/ e passar workerPath/corePath/langPath abaixo.
+  const ocrWorker = useRef(null); // Promise<worker> — cachear a promise evita 2 workers
+  const getOcrWorker = () => {
+    if (!ocrWorker.current)
+      ocrWorker.current = (async () => {
+        const { createWorker } = await import("tesseract.js");
+        return createWorker("por");
+      })();
+    return ocrWorker.current;
+  };
+  useEffect(() => () => {
+    if (ocrWorker.current) ocrWorker.current.then((w) => w.terminate()).catch(() => {});
+  }, []);
+  // o balão some 2s depois de copiar; passar o mouse ou focar o campo pausa a contagem
+  // (balão de erro/carregando fica até o usuário fechar — ele precisa ler a mensagem)
+  useEffect(() => {
+    if (!ocr || !ocr.copiado || ocrHold) return;
+    const t = setTimeout(() => { setOcr(null); setOcrHold(false); }, 2000);
+    return () => clearTimeout(t);
+  }, [ocr && ocr.copiado, ocrHold]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const copiar = async (txt) => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(txt); return true;
+      }
+    } catch { /* cai no fallback abaixo */ }
+    const ta = document.createElement("textarea");
+    ta.value = txt; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  };
+
+  // percorre a árvore de blocos do tesseract até as palavras (com bbox em px do recorte)
+  const ocrPalavras = (d) => {
+    const out = [];
+    for (const b of d.blocks || [])
+      for (const p of b.paragraphs || [])
+        for (const l of p.lines || [])
+          for (const w of l.words || []) out.push(w);
+    return out;
+  };
+
+  const readRegion = async (r) => {
+    const doc = getActive(); if (!doc || !doc.pdfDoc) return;
+    const primeira = !ocrWorker.current;
+    setOcr({ ...r, loading: true, primeira, text: "", err: "" });
+    try {
+      const pageObj = await doc.pdfDoc.getPage(page);
+      // Recorte em alta resolução: renderiza a página inteira deslocada, num canvas do
+      // tamanho da área (as coords do app já são pontos do PDF — ver toDoc).
+      // A margem extra é essencial: o tesseract erra muito quando o texto encosta na borda
+      // do recorte (medido neste PDF: 12/20 sem margem → 18/20 com margem + filtro abaixo).
+      const S = 6;   // resolução do recorte (S=6 saiu bem melhor que S=4 nos testes)
+      const MG = 8;  // margem em pontos ao redor da seleção
+      const vp = pageObj.getViewport({ scale: S });
+      const cv = document.createElement("canvas");
+      cv.width = Math.max(1, Math.round((r.w + MG * 2) * S));
+      cv.height = Math.max(1, Math.round((r.h + MG * 2) * S));
+      const ctx = cv.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+      await pageObj.render({
+        canvasContext: ctx, viewport: vp,
+        transform: [1, 0, 0, 1, -(r.x - MG) * S, -(r.y - MG) * S],
+      }).promise;
+      const worker = await getOcrWorker();
+      const { data } = await worker.recognize(cv, {}, { blocks: true, text: true });
+      // a margem entra na leitura mas não no resultado: fica só o que o usuário selecionou
+      const X0 = MG * S, Y0 = MG * S, X1 = (MG + r.w) * S, Y1 = (MG + r.h) * S;
+      const dentro = ocrPalavras(data).filter((p) => {
+        const cx = (p.bbox.x0 + p.bbox.x1) / 2, cy = (p.bbox.y0 + p.bbox.y1) / 2;
+        return cx >= X0 && cx <= X1 && cy >= Y0 && cy <= Y1;
+      });
+      const bruto = dentro.length ? dentro.map((p) => p.text).join(" ") : data.text || "";
+      const texto = bruto.replace(/\s+/g, " ").trim();
+      if (!texto) {
+        setOcr((o) => (o ? { ...o, loading: false, err: "Não consegui ler essa área — tente selecionar mais perto do código." } : o));
+        return;
+      }
+      const ok = await copiar(texto);
+      setOcr((o) => (o ? { ...o, loading: false, text: texto, copiado: ok } : o));
+    } catch {
+      setOcr((o) => (o ? { ...o, loading: false, err: "Falha ao ler a área. Tente de novo." } : o));
+    }
+  };
+
   // ---- linha-guia horizontal (1 clique atravessa a largura da página) ----
   const addLine = (p) => {
     const doc = getActive(); if (!doc) return;
@@ -909,7 +1026,9 @@ export default function EditorAuditoria() {
     const size = Math.max(14, Math.round(22 / scale));
     const id = "y" + ++textSeq.current;
     (doc.annotations[page] = doc.annotations[page] || []).push(
-      { type: "symbol", id, symbol: checkSymbol, x: p.x, y: p.y, size, color });
+      // x/y são o canto superior esquerdo: recua meio tamanho p/ centralizar no ponto clicado
+      { type: "symbol", id, symbol: checkSymbol,
+        x: Math.max(0, p.x - size / 2), y: Math.max(0, p.y - size / 2), size, color });
     doc.saved = false; redo.current = [];
     setSelectedId(id); tick();
   };
@@ -934,6 +1053,7 @@ export default function EditorAuditoria() {
   const selectTool = (id) => {
     setTool(tool === id ? "select" : id);
     setSelectedId(null);
+    setOcr(null); setOcrHold(false);
   };
   const updateText = (id, text) => {
     const a = findText(id); if (!a) return;
@@ -946,6 +1066,16 @@ export default function EditorAuditoria() {
   const resizeText = (id, size) => {
     const a = findText(id); if (!a) return;
     a.size = size; getActive().saved = false; tick();
+  };
+  // setas do teclado: desloca o item selecionado; devolve true se consumiu a tecla
+  const nudgeSelected = (dx, dy) => {
+    const a = findText(selectedId); if (!a) return false;
+    if (a.type === "strike") {          // linha-guia: só se move na vertical
+      if (dy) moveLine(a.id, Math.max(0, a.y1 + dy));
+      return true;                      // ←/→ não trocam de página com a linha selecionada
+    }
+    moveText(a.id, Math.max(0, a.x + dx), Math.max(0, a.y + dy));
+    return true;
   };
   const measureText = (id, w, h) => {
     const a = findText(id); if (!a) return;
@@ -1105,7 +1235,7 @@ export default function EditorAuditoria() {
 
   // atalhos de teclado (lê versão atual via ref)
   const kb = useRef({});
-  kb.current = { undo, redoAction, prevPage, nextPage, deleteText, editingId, selectedId };
+  kb.current = { undo, redoAction, prevPage, nextPage, nudgeSelected, deleteText, editingId, selectedId };
   useEffect(() => {
     const h = (e) => {
       // não interferir enquanto o usuário digita num campo
@@ -1116,8 +1246,16 @@ export default function EditorAuditoria() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); kb.current.undo(); }
       if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); kb.current.redoAction(); }
-      if (e.key === "ArrowLeft") kb.current.prevPage();
-      if (e.key === "ArrowRight") kb.current.nextPage();
+      // setas: movem o item selecionado; sem seleção, passam as páginas (como antes)
+      if (e.key.startsWith("Arrow")) {
+        const passo = e.shiftKey ? 10 : 1; // 1pt no ajuste fino, 10pt com Shift
+        const dx = e.key === "ArrowLeft" ? -passo : e.key === "ArrowRight" ? passo : 0;
+        const dy = e.key === "ArrowUp" ? -passo : e.key === "ArrowDown" ? passo : 0;
+        if (!dx && !dy) return;
+        if (kb.current.nudgeSelected(dx, dy)) { e.preventDefault(); return; }
+        if (dx < 0) kb.current.prevPage();
+        if (dx > 0) kb.current.nextPage(); // sem seleção, ↑/↓ seguem rolando a página
+      }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -1242,6 +1380,7 @@ export default function EditorAuditoria() {
     { id: "highlight", label: "Destaque", Icon: Highlighter },
     { id: "check", label: "Check", Icon: Check },
     { id: "eraser", label: "Borracha", Icon: Eraser },
+    { id: "ocr", label: "Copiar código", Icon: ScanText },
   ];
 
   return (
@@ -1415,7 +1554,10 @@ export default function EditorAuditoria() {
         </aside>
 
         {/* workspace */}
-        <main ref={mainRef} className="flex-1 overflow-auto flex justify-center p-3 md:p-6 maida-scroll">
+        {/* nada de justify-center aqui: com o conteúdo maior que a área visível ele joga a
+            borda esquerda para um deslocamento negativo, que o scrollLeft não alcança.
+            A centralização fica por conta do mx-auto do wrapper da página (vira 0 no zoom). */}
+        <main ref={mainRef} className="flex-1 overflow-auto flex p-3 md:p-6 maida-scroll">
           {loadErr ? (
             <div className="m-auto max-w-md text-center text-red-500 text-sm">{loadErr}</div>
           ) : !ready ? (
@@ -1438,7 +1580,7 @@ export default function EditorAuditoria() {
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-3">
+            <div className="flex flex-col items-center gap-3 mx-auto">
               <div ref={wrapRef} className="relative bg-white shadow rounded" style={{ lineHeight: 0 }}>
                 <canvas ref={baseRef} className="block rounded" />
                 <canvas ref={overlayRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
@@ -1507,6 +1649,52 @@ export default function EditorAuditoria() {
                       />
                     ))}
                 </div>
+                {/* balão da leitura de código (OCR) */}
+                {ocr && (
+                  <div
+                    onMouseEnter={() => setOcrHold(true)}
+                    onMouseLeave={() => setOcrHold(false)}
+                    onPointerDown={() => setOcrHold(true)}
+                    onFocus={() => setOcrHold(true)}
+                    onBlur={() => setOcrHold(false)}
+                    style={{
+                      position: "absolute", zIndex: 5, pointerEvents: "auto",
+                      left: ocr.x * scale, top: (ocr.y + ocr.h) * scale + 8,
+                      maxWidth: 320, lineHeight: 1.3,
+                    }}>
+                    <div className="flex items-center gap-1.5 p-2 rounded-lg shadow-lg text-sm
+                      bg-[var(--surface)] border border-[var(--accent)] text-[var(--text)]">
+                      {ocr.loading ? (
+                        <span className="px-1 text-[var(--muted)]">
+                          {ocr.primeira ? "Preparando leitor…" : "Lendo…"}
+                        </span>
+                      ) : ocr.err ? (
+                        <span className="px-1 text-[var(--muted)]">{ocr.err}</span>
+                      ) : (
+                        <>
+                          <input value={ocr.text}
+                            onChange={(e) => setOcr((o) => ({ ...o, text: e.target.value, copiado: false }))}
+                            onFocus={(e) => e.target.select()}
+                            title="Corrija aqui se a leitura saiu errada"
+                            className="w-40 px-1.5 py-1 rounded-md font-mono
+                              border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]
+                              focus:outline-none focus:border-[var(--accent)]" />
+                          <button onClick={async () => {
+                            const ok = await copiar(ocr.text);
+                            setOcr((o) => (o ? { ...o, copiado: ok } : o));
+                          }}
+                            title="Copiar para a área de transferência"
+                            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold
+                              bg-[var(--accent)] text-[var(--accent-contrast)] hover:opacity-90">
+                            <Copy className="w-3.5 h-3.5" />{ocr.copiado ? "copiado!" : "Copiar"}
+                          </button>
+                        </>
+                      )}
+                      <button onClick={() => setOcr(null)} title="Fechar"
+                        className="px-1.5 py-1 rounded-md text-[var(--muted)] hover:bg-[var(--hover)]">×</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
