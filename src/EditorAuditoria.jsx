@@ -547,6 +547,7 @@ export default function EditorAuditoria() {
   const seq = useRef(0);
   const [activeId, setActiveId] = useState(null);
   const [page, setPage] = useState(1);
+  const [pageInput, setPageInput] = useState("1"); // campo "ir para página" do rodapé
   const [scale, setScale] = useState(1.3);
   const [tool, setTool] = useState("pen");
   const [color, setColor] = useState("#d92d20");
@@ -568,6 +569,9 @@ export default function EditorAuditoria() {
 
   // limpa edição/seleção ao trocar de documento ou página
   useEffect(() => { setEditingId(null); setSelectedId(null); }, [activeId, page]);
+
+  // mantém o campo do rodapé em sincronia quando a página muda por fora (setas, troca de doc)
+  useEffect(() => { setPageInput(String(page)); }, [page, activeId]);
 
   const baseRef = useRef(null);
   const overlayRef = useRef(null);
@@ -1086,6 +1090,18 @@ export default function EditorAuditoria() {
   };
   const prevPage = () => { if (page > 1) { const d = getActive(); d.page = page - 1; setPage(page - 1); } };
   const nextPage = () => { const d = getActive(); if (d && page < d.numPages) { d.page = page + 1; setPage(page + 1); } };
+  // ir direto para uma página (usado pelo campo do rodapé); fora do intervalo, ajusta p/ 1..numPages
+  const goToPage = (n) => {
+    const d = getActive(); if (!d || !d.numPages) return page;
+    const alvo = Math.min(d.numPages, Math.max(1, Math.floor(n)));
+    if (alvo !== page) { d.page = alvo; setPage(alvo); }
+    return alvo;
+  };
+  const commitPageInput = () => {
+    const n = parseInt(pageInput, 10);
+    if (Number.isNaN(n)) { setPageInput(String(page)); return; }
+    setPageInput(String(goToPage(n)));
+  };
 
   // atalhos de teclado (lê versão atual via ref)
   const kb = useRef({});
@@ -1577,7 +1593,21 @@ export default function EditorAuditoria() {
         <div className="flex items-center gap-1.5">
           <button onClick={prevPage} disabled={!active || page <= 1}
             className="px-3 py-1.5 md:px-2.5 md:py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><ChevronLeft className="w-4 h-4" /></button>
-          <span className="w-24 text-center">Página {active ? page : 0} / {active ? active.numPages : 0}</span>
+          <span className="flex items-center gap-1">
+            <span className="hidden sm:inline">Página</span>
+            <input type="text" inputMode="numeric" value={pageInput}
+              disabled={!active || !active.numPages}
+              onFocus={(e) => e.target.select()}
+              onChange={(e) => setPageInput(e.target.value.replace(/[^0-9]/g, ""))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); commitPageInput(); e.currentTarget.blur(); }
+                if (e.key === "Escape") { e.preventDefault(); setPageInput(String(page)); e.currentTarget.blur(); }
+              }}
+              onBlur={commitPageInput}
+              title="Digite o número da página e pressione Enter"
+              className="w-12 px-1 py-0.5 text-center rounded-md border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-40" />
+            <span>/ {active ? active.numPages : 0}</span>
+          </span>
           <button onClick={nextPage} disabled={!active || page >= (active ? active.numPages : 0)}
             className="px-3 py-1.5 md:px-2.5 md:py-1 rounded-md border border-[var(--border)] text-[var(--text)] hover:bg-[var(--hover)] disabled:opacity-40"><ChevronRight className="w-4 h-4" /></button>
         </div>
